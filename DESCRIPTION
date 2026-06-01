@@ -1,0 +1,61 @@
+Package: shinypopgen
+Title: Interactive Shiny Application for Population Genetics
+Version: 0.1.0
+Authors@R: c(
+    person("Vincent", "Manzanilla", email = "vincent.manzanilla@ird.fr",
+           role = c("aut", "cre")),
+    person("Naffiou", "Kadiri", email = "knaffiou96@gmail.com",
+           role = "aut"),
+    person("Thierry", "de Mee\u00fbs", email = "thierry.demeeus@ird.fr",
+           role = "aut"),
+    person("INTERTRYP, IRD, CIRAD", role = "cph")
+  )
+BugReports: https://forge.ird.fr/intertryp/shinypopgen/-/issues
+URL: https://forge.ird.fr/intertryp/shinypopgen
+Description: ShinyPopGen is an interactive Shiny application for exploratory
+    and descriptive population genetics analyses from individual-based multilocus
+    datasets. It supports data import and formatting, marker inspection, estimation
+    of standard diversity and differentiation statistics (Weir & Cockerham 1984),
+    linkage disequilibrium analyses, and null allele screening.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+LazyData: false
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+SystemRequirements: C++17, OpenMP
+Imports:
+    shiny (>= 1.7.0),
+    bslib (>= 0.6.0),
+    shinydashboard,
+    shinyWidgets,
+    shinyalert,
+    DT,
+    dplyr,
+    tidyr,
+    ggplot2,
+    kableExtra,
+    Rcpp (>= 1.0.0),
+    leaflet,
+    tibble,
+    waiter,
+    duckdb,
+    DBI,
+    jsonlite,
+    htmltools,
+    htmlwidgets,
+    webshot2,
+    gridExtra,
+    plotly,
+    magrittr
+LinkingTo:
+    Rcpp
+VignetteBuilder: knitr
+Suggests:
+    testthat (>= 3.0.0),
+    digest,
+    golem (>= 0.4.0),
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3

@@ -1,0 +1,25 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.claude/
+
+# Server infrastructure docs (local reference only, lives in forge.ird.fr/mivegec/dainat/skat3)
+skat3/
+
+# Legacy root-level directories (pre-package era, kept locally only)
+app.R
+data/
+module/
+pgacmdr.Rproj
+pgaduck/
+README_shinypopgen.md
+# src/ compiled artefacts only — keep source files tracked
+src/*.o
+src/*.so
+src/*.dll
+tests/
+Tests/
+/www/
+*.tar.gz
+*.Rcheck/

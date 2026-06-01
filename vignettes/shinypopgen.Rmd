@@ -1,0 +1,151 @@
+---
+title: "Getting started with ShinyPopGen"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with ShinyPopGen}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Overview
+
+**ShinyPopGen** is an interactive Shiny application for exploratory and
+descriptive population genetics analyses from individual-based multilocus
+datasets (microsatellites, codominant markers).
+
+It covers the full analytical workflow:
+
+1. Data import and automatic column detection
+2. Allele frequency distributions and missing data
+3. General statistics (N, Na, Ho, He, F-statistics)
+4. Local panmixia -- FIS per locus and population (Weir & Cockerham 1984)
+5. Global panmixia -- FIT across all populations
+6. Population subdivision -- FST per locus and globally
+7. Genetic diversities -- HS, HT, locus bootstrap
+8. Linkage disequilibrium -- pairwise G-test with permutation p-values
+9. Null allele frequency estimation
+
+## Launch the application
+
+```{r launch}
+library(shinypopgen)
+run_app()
+```
+
+The application opens in your default browser. All computations run locally;
+no data is sent to any server.
+
+## Data format
+
+ShinyPopGen accepts tab-separated or comma-separated plain text files.
+Two genotype encodings are supported.
+
+### Single-column format
+
+Each locus occupies one column; alleles are separated by a character
+(`/`, `-`, `_`, etc.):
+
+```
+Population  B12      C07      D12
+Pop1        192/194  145/192  92/112
+Pop1        200/200  179/179  108/112
+Pop2        145/145  92/92    92/100
+```
+
+### Two-column format
+
+Each locus occupies two consecutive columns (one per allele):
+
+```
+Population  B12  B12  C07  C07
+Pop1        192  194  145  192
+Pop1        200  200  179  179
+Pop2        145  145   92   92
+```
+
+Missing genotypes should be coded consistently (default: `0`).
+
+## Worked example: *Boophilus* cattle ticks
+
+The package ships a demonstration dataset from Thierry de Meeus' teaching
+material (`inst/extdata/default_dataset.csv`): 698 adult *Boophilus* ticks
+sampled from cattle across New Caledonia, genotyped at 6 microsatellite loci
+(B12, C07, D12, D10, A12, C03).
+
+### 1. Load the default dataset
+
+Click **"Load Default Data"** in the sidebar of the *Data Import & Filtering*
+tab. The application will:
+
+- Import the file via DuckDB
+- Auto-detect the population column (`Pop`) and GPS coordinates
+- Detect the 12 allele columns (two-column format, loci B12 -- C03)
+- Build the internal `hf` table (individual x locus packed integers)
+- Display a preview and map of sampling localities
+
+### 2. Allele frequencies
+
+Navigate to *Allele Freq & Missing Data*. You will see per-locus allele
+frequency bar charts and a missing-data summary table. The Boophilus dataset
+has no missing data.
+
+### 3. General statistics
+
+The *General Statistics* tab shows sample size (N), number of alleles (Na),
+observed heterozygosity (Ho), and expected heterozygosity (He) per locus and
+population, together with overall Weir & Cockerham (1984) F-statistics.
+
+### 4. Local panmixia (FIS)
+
+The *Local Panmixia* tab reports per-locus FIS values within each population,
+with:
+
+- **Bootstrap 95% CI** (individual resampling, 1000 replicates by default)
+- **Permutation p-value** (within-population allele shuffling,
+  1000 permutations; `p = (B_ge + 1) / B`)
+
+### 5. Linkage disequilibrium
+
+The *Linkage Disequilibrium* tab tests all locus pairs within each population.
+The G-statistic is:
+
+```
+G = 2 * sum(O * log(O / E))
+```
+
+where O and E are observed and expected counts under independence.
+P-values are Monte Carlo estimates from Fisher-Yates permutations of
+one locus column within each population.
+
+### 6. Export results
+
+Every results table has a download button (.csv / .txt). The formatted
+dataset can also be downloaded from the *Data Import* tab.
+
+## Statistical methods
+
+All F-statistics follow **Weir & Cockerham (1984)**:
+
+> Weir, B.S. & Cockerham, C.C. (1984). Estimating F-statistics for the
+> analysis of population structure. *Evolution*, **38**, 1358--1370.
+
+Permutation p-values use the formula `p = (n_ge + 1) / B` where `n_ge` is
+the number of permuted statistics >= the observed value and `B` is the number
+of permutations, following:
+
+> Phipson, B. & Smyth, G.K. (2010). Permutation p-values should never be
+> zero: calculating exact p-values when permutations are randomly drawn.
+> *Statistical Applications in Genetics and Molecular Biology*, **9**, 39.
+
+Heavy computations (bootstrap, permutation loops) are parallelised with
+OpenMP via C++17 (Rcpp).
+
+## Session info
+
+```{r session}
+sessionInfo()
+```
