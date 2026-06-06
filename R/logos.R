@@ -14,6 +14,7 @@ spg_logo_uris <- function() {
     spg_icon    = .read_logo("shinypopgen_logo.svg", "image/svg+xml"),
     ird         = .read_logo("ird_logo.png",         "image/png"),
     cirad       = .read_logo("cirad_logo.png",       "image/png"),
-    intertryp   = .read_logo("INTERTRYP_logo.png",   "image/png")
+    intertryp   = .read_logo("INTERTRYP_logo.png",   "image/png"),
+    ucad   = .read_logo("ucad_logo.png",   "image/png")
   )
 }
