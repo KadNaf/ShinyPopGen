@@ -119,52 +119,54 @@ mod_subdivision_ui <- function(id) {
     # ==========================================================#
     h2("G-based Permutation Test \u2014 Subdivision", class = "section-title"),
     tags$p(HTML(paste0(
-      "G statistic (log-likelihood ratio) per locus and global, derived from shuffling population labels ",
-      "(one-sided test, G &ge; G<sub>obs</sub>). ",
-      "Per-locus p-values corrected for multiple testing (FDR, Benjamini-Hochberg). ",
-      "<br>Uses the same permutation scheme as FST: population labels randomly reassigned among individuals."
+      "G statistic (log-likelihood ratio) par locus, construit sur le tableau de contingence ",
+      "allèles \u00d7 populations. Test global = somme des G par locus. ",
+      "Permutation : labels de population shufflés (même schéma que FST). ",
+      "p-value = (b + 1) / (m + 1) o\u00f9 b = nombre de G\u209a\u2091\u02b3\u2098 \u2265 G\u2092\u2087\u2073."
     )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(
         width = 12,
         title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
-                    icon("flask"),
-                    "G-test: parameters"),
+                    icon("flask"), "G-test: parameters"),
         solidHeader = TRUE, status = "primary",
         fluidRow(
           column(3,
             h4(icon("sliders"), "Parameters"),
-            numericInput(ns("n_perm_g"),     "Number of Permutations:",  value = 5000, min = 5000, max = 50000, step = 1000),
-            numericInput(ns("conf_level_g"), "Confidence Level:",         value = 0.95, min = 0.80, max = 0.99,  step = 0.01),
+            numericInput(ns("n_perm_g"), "Number of Permutations:",
+                        value = 5000, min = 5000, max = 50000, step = 1000),
+            numericInput(ns("conf_level_g"), "Confidence Level:",
+                        value = 0.95, min = 0.80, max = 0.99, step = 0.01),
             actionButton(ns("run_G_test"), "Run G-test",
-                         icon  = icon("rocket"),
-                         class = "btn-action-primary btn-block", style = "font-weight: bold;"),
+                        icon  = icon("rocket"),
+                        class = "btn-action-primary btn-block",
+                        style = "font-weight: bold;"),
             tags$small(
               style = "color: #666; margin-top: 6px; display: block;",
               icon("info-circle"),
-              "Minimum 5 000 permutations. Global and per-locus G computed in a single C++ call."
+              "Minimum 5 000 permutations. G global = somme des G par locus."
             )
           ),
           column(9,
             h4(icon("chart-area"), "G-test Summary",
-               style = "font-weight: 600; color: #2c3e50; margin-bottom: 15px;"),
+              style = "font-weight: 600; color: #2c3e50; margin-bottom: 15px;"),
             fluidRow(
               column(3,
-                valueBoxOutput(ns("g_global_obs_box"),    width = NULL),
-                valueBoxOutput(ns("g_power_box"),         width = NULL)
+                valueBoxOutput(ns("g_global_obs_box"), width = NULL),
+                valueBoxOutput(ns("g_power_box"),      width = NULL)
               ),
               column(3,
                 valueBoxOutput(ns("g_global_pvalue_box"), width = NULL),
                 valueBoxOutput(ns("g_mean_pvalue_box"),   width = NULL)
               ),
               column(3,
-                valueBoxOutput(ns("g_signif_loci_box"),   width = NULL),
-                valueBoxOutput(ns("g_fdr_box"),           width = NULL)
+                valueBoxOutput(ns("g_signif_loci_box"), width = NULL),
+                valueBoxOutput(ns("g_fdr_box"),         width = NULL)
               ),
               column(3,
-                valueBoxOutput(ns("g_time_box"),          width = NULL),
-                valueBoxOutput(ns("g_n_perm_box"),        width = NULL)
+                valueBoxOutput(ns("g_time_box"),   width = NULL),
+                valueBoxOutput(ns("g_n_perm_box"), width = NULL)
               )
             ),
             fluidRow(
@@ -183,15 +185,14 @@ mod_subdivision_ui <- function(id) {
       box(
         width = 12,
         title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
-                    icon("table"),
-                    "G-test Results"),
+                    icon("table"), "G-test Results"),
         solidHeader = TRUE, status = "primary",
         tabsetPanel(
           tabPanel("G-test results",
             h4(icon("info-circle"), "G-statistic per locus"),
             p(HTML(paste0(
-              "G observed per locus with permutation p-values (one-sided) and FDR-corrected q-values ",
-              "(Benjamini-Hochberg). Global G reported in the last row."
+              "G observé par locus avec p-values (test unilatéral) et q-values ",
+              "corrigées FDR (Benjamini-Hochberg). Ligne Overall = G global (somme des loci)."
             ))),
             DTOutput(ns("g_results_table")), br(),
             fluidRow(
