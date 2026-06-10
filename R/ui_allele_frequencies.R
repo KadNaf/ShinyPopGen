@@ -35,7 +35,7 @@ ui_allele_frequencies <- function(id) {
                     "Allele Frequency Analysis Parameters"),
         solidHeader = TRUE, status = "primary",
         fluidRow(
-          column(3,
+          column(4,
             h4(icon("filter"), "Selection"),
             selectInput(ns("fstat_population"), "Population:",
               choices = c("All populations" = "all"), multiple = FALSE),
@@ -47,47 +47,7 @@ ui_allele_frequencies <- function(id) {
               label = tagList(icon("play"), " Compute Frequencies"),
               class = "btn-action-primary btn-block", style = "font-weight: bold;")
           ),
-          column(9,
-            h4(icon("chart-bar"), "Dataset Summary",
-               style = "font-weight: 600; color: #2c3e50; margin-bottom: 15px;"),
-            fluidRow(
-              column(3,
-                div(class = "af-vbox",
-                  div(class = "af-vbox-icon", style = "background:#E6F1FB;color:#185FA5;", icon("users")),
-                  div(
-                    div(class = "af-vbox-label", "Individuals"),
-                    uiOutput(ns("vb_individuals"))
-                  )
-                )
-              ),
-              column(3,
-                div(class = "af-vbox",
-                  div(class = "af-vbox-icon", style = "background:#EAF3DE;color:#3B6D11;", icon("map-marker-alt")),
-                  div(
-                    div(class = "af-vbox-label", "Populations"),
-                    uiOutput(ns("vb_populations"))
-                  )
-                )
-              ),
-              column(3,
-                div(class = "af-vbox",
-                  div(class = "af-vbox-icon", style = "background:#EEEDFE;color:#534AB7;", icon("dna")),
-                  div(
-                    div(class = "af-vbox-label", "Markers"),
-                    uiOutput(ns("vb_markers"))
-                  )
-                )
-              ),
-              column(3,
-                div(class = "af-vbox",
-                  div(class = "af-vbox-icon", style = "background:#FAEEDA;color:#854F0B;", icon("exclamation-triangle")),
-                  div(
-                    div(class = "af-vbox-label", "Missing data"),
-                    uiOutput(ns("vb_missing"))
-                  )
-                )
-              )
-            ),
+          column(8,
             br(),
             fluidRow(
               column(12,
