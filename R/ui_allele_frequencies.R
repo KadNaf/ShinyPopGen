@@ -31,7 +31,7 @@ ui_allele_frequencies <- function(id) {
       box(
         width = 12,
         title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
-                    icon("sliders-h"),
+                    icon("chart-pie"),
                     "Allele Frequency Analysis Parameters"),
         solidHeader = TRUE, status = "primary",
         fluidRow(

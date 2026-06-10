@@ -107,6 +107,81 @@ gs_head <- function() {
       padding: 10px;
       border-bottom: 2px solid #CEB175;
     }
+
+    .btn-action-primary {
+      background: linear-gradient(135deg, #78B7C5 0%, #5A9BA8 100%);
+      border: none;
+      color: white;
+      border-radius: 6px;
+      padding: 8px 16px;
+      transition: all 0.3s ease;
+    }
+
+    .btn-action-primary:hover {
+      background: linear-gradient(135deg, #5A9BA8 0%, #48808B 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+
+    .btn-download-primary {
+      background: #78B7C5;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      padding: 5px 12px;
+      width: 100%;
+    }
+
+    .btn-download-secondary {
+      background: #6c757d;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      padding: 5px 12px;
+      width: 100%;
+    }
+
+    .af-vbox {
+      background: white;
+      border: 0.5px solid rgba(0,0,0,.1);
+      border-radius: 10px;
+      padding: .75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+
+    .af-vbox-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+
+    .af-vbox-label {
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 1px;
+    }
+
+    .af-vbox-val {
+      font-size: 22px;
+      font-weight: 500;
+      line-height: 1.1;
+    }
+
+    .section-title {
+      color: #333a43;
+      text-align: center;
+      margin: 30px 0 20px 0;
+      padding: 10px;
+      border-bottom: 2px solid #CEB175;
+    }
   ")),
     tags$script(HTML("
     $(document).on('shown.bs.tab', 'a[data-toggle=\"tab\"]', function () {
