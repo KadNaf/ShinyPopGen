@@ -3235,47 +3235,60 @@ server_general_stats <- function(id, rv) {
     ###
 
     # ==================================== G-TEST SECTION ===============================================
-    # Pirate le tableau de contingence du LD (allèles x populations par locus)
-    # et le schéma de permutation du FST (shuffle des pop labels).
-    # G = 2 * sum(O * log(O/E)) sur le tableau allèles x populations.
-    # G_global = sum(G_locus). p = (b+1)/(m+1), b = #{G_perm >= G_obs}.
+    # Piraté de ld_pvalues_cpp et du schéma de permutation FST.
+    #
+    # DIFFÉRENCE LD vs Subdivision :
+    #   LD      : tableau génotype_locus1 × génotype_locus2 (par population)
+    #   G-subdi : tableau allèle × population (par locus)
+    #
+    # G = 2 * sum(O * log(O/E))  — même formule que g_stat_from_counts() dans ld_pvalues_cpp
+    #
+    # Permutation (piraté du FST) : shuffle global des pop labels (pas des col_ids intra-pop).
+    # G_global = sum(G_locus) — propriété additive, même logique que Gall_obs dans ld_pvalues_cpp.
+    # p = (b+1)/(m+1) — même formule que dans ld_pvalues_cpp.
     # ==========================================#
 
     ## Reactive containers ----
     g_test_results <- reactiveVal(NULL)
     g_test_timing  <- reactiveVal(NULL)
 
-    ## Calcul G sur tableau de contingence allèles x populations (piraté du LD) ----
-    ## Input : pop_codes (integer), a1/a2 (integer vectors, allèles déjà décodés)
-    ##         pops = niveaux de populations triés
-    ## Retourne G scalaire ou NA
-    .g_stat_locus <- function(pop_codes, a1, a2, pops) {
+    ## G sur tableau allèle x population — piraté de g_stat_from_counts() ----
+    ## cnt   : matrice n_pops x n_alleles (entiers)
+    ## retourne G scalaire ou NA
+    .g_stat_allele_pop <- function(cnt) {
+      nr <- nrow(cnt); nc <- ncol(cnt)
+      rs  <- rowSums(cnt); cs <- colSums(cnt); n <- sum(cnt)
+      if (n == 0L || nr < 2L || nc < 2L) return(NA_real_)
+      # au moins 2 lignes non-nulles et 2 colonnes non-nulles (informative_table)
+      if (sum(rs > 0L) < 2L || sum(cs > 0L) < 2L) return(NA_real_)
+      E  <- outer(rs, cs) / n
+      ok <- cnt > 0L & E > 0
+      if (!any(ok)) return(NA_real_)
+      2 * sum(cnt[ok] * log(cnt[ok] / E[ok]))
+    }
+
+    ## Construire le tableau allèle x population pour un locus ----
+    ## pop_codes : integer vector (codes numériques des populations)
+    ## a1, a2    : integer vectors (allèles décodés, même longueur que pop_codes)
+    ## pops      : niveaux de populations triés
+    ## Retourne une matrice n_pops x n_alleles ou NULL si non informatif
+    .build_allele_pop_table <- function(pop_codes, a1, a2, pops) {
       all_alleles <- sort(unique(c(a1, a2)))
       n_a   <- length(all_alleles)
       n_pop <- length(pops)
-      if (n_a < 2L || n_pop < 2L) return(NA_real_)
+      if (n_a < 2L || n_pop < 2L) return(NULL)
 
-      # Tableau de comptage allèles (colonnes) x populations (lignes)
-      # même logique que ld_pvalues_cpp : on compte les copies alléliques par pop
-      counts <- matrix(0L, nrow = n_pop, ncol = n_a)
+      # tabulate() : même logique que la boucle sur row_ids/col_ids dans ld_pvalues_cpp
+      cnt <- matrix(0L, nrow = n_pop, ncol = n_a)
       for (pi in seq_len(n_pop)) {
         idx <- pop_codes == pops[pi]
         if (!any(idx)) next
-        counts[pi, ] <- tabulate(
+        cnt[pi, ] <- tabulate(
           match(c(a1[idx], a2[idx]), all_alleles),
           nbins = n_a
         )
       }
-
-      grand <- sum(counts)
-      if (grand == 0L) return(NA_real_)
-
-      row_tot <- rowSums(counts)
-      col_tot <- colSums(counts)
-      E   <- outer(row_tot, col_tot) / grand
-      ok  <- counts > 0L & E > 0
-      if (!any(ok)) return(NA_real_)
-      2 * sum(counts[ok] * log(counts[ok] / E[ok]))
+      cnt
     }
 
     ## Observer: Run button ----
@@ -3322,20 +3335,21 @@ server_general_stats <- function(id, rv) {
 
         pop_codes <- as.integer(mat[, 1L])
         pops      <- sort(unique(pop_codes[is.finite(pop_codes) & pop_codes > 0L]))
+        n_pops    <- length(pops)
 
-        # Noms de populations depuis DB (même requête que FST)
+        # Noms de populations depuis DB
         pop_df <- DBI::dbGetQuery(con, sprintf(
           "SELECT DISTINCT Population FROM %s WHERE Population IS NOT NULL ORDER BY Population",
           sql_ident(con, tbl_meta_r())
         ))
-        pop_codes_chr <- as.character(pops)
-        pop_names     <- as.character(pop_df$Population[seq_along(pop_codes_chr)])
+        pop_names <- as.character(pop_df$Population[seq_along(as.character(pops))])
 
-        # ── Décoder les génotypes une seule fois (piraté du LD) ──────────────
-        # gt = a1*base + a2 ; même encodage que ld_pvalues_cpp
-        loci_a1 <- vector("list", n_loci)
-        loci_a2 <- vector("list", n_loci)
-        loci_pc <- vector("list", n_loci)
+        # ── Décoder les génotypes une seule fois (gt = a1*base + a2) ─────────
+        # Même décodage que dans ld_pvalues_cpp : gt/base et gt%%base
+        loci_a1  <- vector("list", n_loci)
+        loci_a2  <- vector("list", n_loci)
+        loci_pc  <- vector("list", n_loci)   # pop_codes filtrés (indices valides)
+        loci_idx <- vector("list", n_loci)   # indices globaux valides dans mat
 
         for (j in seq_len(n_loci)) {
           g   <- as.integer(mat[, j + 1L])
@@ -3343,57 +3357,56 @@ server_general_stats <- function(id, rv) {
           a1  <- g[ok] %/% base
           a2  <- g[ok] %% base
           ok2 <- a1 > 0L & a2 > 0L
-          loci_a1[[j]] <- a1[ok2]
-          loci_a2[[j]] <- a2[ok2]
-          loci_pc[[j]] <- pop_codes[ok][ok2]
+          loci_a1[[j]]  <- a1[ok2]
+          loci_a2[[j]]  <- a2[ok2]
+          loci_pc[[j]]  <- pop_codes[ok][ok2]
+          loci_idx[[j]] <- which(ok)[ok2]    # indices dans mat (1-based) — pour permutation
         }
 
-        # ── G observé par locus (même logique que G dans ld_pvalues_cpp) ─────
-        g_obs <- vapply(seq_len(n_loci), function(j)
-          .g_stat_locus(loci_pc[[j]], loci_a1[[j]], loci_a2[[j]], pops),
-          numeric(1))
+        # ── G observé par locus ───────────────────────────────────────────────
+        # Tableau allèle x population, même G que g_stat_from_counts dans ld_pvalues_cpp
+        g_obs <- vapply(seq_len(n_loci), function(j) {
+          cnt <- .build_allele_pop_table(loci_pc[[j]], loci_a1[[j]], loci_a2[[j]], pops)
+          if (is.null(cnt)) return(NA_real_)
+          .g_stat_allele_pop(cnt)
+        }, numeric(1))
         names(g_obs) <- loci_names
 
-        # G global observé = somme des G par locus (propriété additive)
+        # G global observé = somme des G par locus (propriété additive — Gall_obs dans ld_pvalues_cpp)
         g_obs_overall <- sum(g_obs, na.rm = TRUE)
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 15)
 
-        # ── Permutations (piraté du FST : shuffle des pop labels) ────────────
+        # ── Permutations ──────────────────────────────────────────────────────
+        # Piraté du FST : shuffle global des pop_codes (permute_pop_labels).
+        # Différence vs LD : dans ld_pvalues_cpp on shuffle col_ids intra-population
+        # (permutation des génotypes au locus B au sein de chaque population).
+        # Ici on shuffle les pop labels globalement — même H0 que le test FST
+        # (pas de structure de population).
         # Pour chaque permutation b :
-        #   - shuffler pop_codes globalement (même schéma que batch_permute_wc84)
-        #   - calculer G_perm par locus
-        #   - G_perm_global = sum(G_perm_locus)
+        #   perm_pc   = sample(pop_codes)
+        #   G_perm[j] = G calculé avec perm_pc sur le locus j
+        #   G_perm_global = sum(G_perm)   — même que s_all dans ld_pvalues_cpp
         n_perm         <- as.integer(input$n_perm_g)
         G_null_locus   <- matrix(NA_real_, nrow = n_perm, ncol = n_loci)
         G_null_overall <- numeric(n_perm)
 
         set.seed(as.integer(.seed()))
-
-        # Pré-extraire les index ok par locus pour éviter de recalculer à chaque perm
-        loci_ok_idx <- vector("list", n_loci)
-        for (j in seq_len(n_loci)) {
-          g   <- as.integer(mat[, j + 1L])
-          ok  <- is.finite(g) & g > 0L
-          a1  <- g[ok] %/% base
-          a2  <- g[ok] %% base
-          ok2 <- a1 > 0L & a2 > 0L
-          loci_ok_idx[[j]] <- which(ok)[ok2]   # indices dans mat (1-based)
-        }
-
         tick <- max(1L, n_perm %/% 10L)
 
         for (b in seq_len(n_perm)) {
-          # Shuffle pop labels — même schéma que permute_pop_labels dans FST
-          perm_pc <- sample(pop_codes)
+          perm_pc <- sample(pop_codes)   # shuffle global — même H0 que FST
 
           g_perm <- vapply(seq_len(n_loci), function(j) {
-            idx <- loci_ok_idx[[j]]
-            .g_stat_locus(perm_pc[idx], loci_a1[[j]], loci_a2[[j]], pops)
+            # pop_codes permutés aux indices valides de ce locus
+            pc_j <- perm_pc[loci_idx[[j]]]
+            cnt  <- .build_allele_pop_table(pc_j, loci_a1[[j]], loci_a2[[j]], pops)
+            if (is.null(cnt)) return(NA_real_)
+            .g_stat_allele_pop(cnt)
           }, numeric(1))
 
           G_null_locus[b, ]  <- g_perm
-          G_null_overall[b]  <- sum(g_perm, na.rm = TRUE)
+          G_null_overall[b]  <- sum(g_perm, na.rm = TRUE)  # s_all de ld_pvalues_cpp
 
           if (b %% tick == 0L)
             shinyWidgets::updateProgressBar(
@@ -3404,7 +3417,8 @@ server_general_stats <- function(id, rv) {
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 95)
 
-        # ── P-values par locus : p = (b+1)/(m+1) (même formule que LD/FST) ──
+        # ── P-values : p = (b+1)/(m+1) — même formule que ld_pvalues_cpp ────
+        # ge_pop[p] / nbperms dans le C++ devient (sum(null >= obs) + 1) / (n_perm + 1)
         p_locus <- vapply(seq_len(n_loci), function(j) {
           obs  <- g_obs[j]
           if (!is.finite(obs)) return(NA_real_)
@@ -3415,18 +3429,18 @@ server_general_stats <- function(id, rv) {
         }, numeric(1))
         names(p_locus) <- loci_names
 
-        # P-value globale
+        # P-value globale (ge_all dans ld_pvalues_cpp)
         p_overall <- {
           null <- G_null_overall[is.finite(G_null_overall)]
           if (length(null) == 0L || !is.finite(g_obs_overall)) NA_real_
           else (sum(null >= g_obs_overall) + 1) / (length(null) + 1)
         }
 
-        # FDR Benjamini-Hochberg sur les p-values par locus
+        # FDR Benjamini-Hochberg
         q_locus        <- p.adjust(p_locus, method = "BH")
         names(q_locus) <- loci_names
 
-        # ── Tables finales (même convention que FST : Overall en dernière ligne) ─
+        # ── Tables finales (Overall en dernière ligne — même convention que FST) ─
         per_locus_tbl <- data.frame(
           ID       = loci_names,
           G_obs    = g_obs,
