@@ -3587,6 +3587,16 @@ server_general_stats <- function(id, rv) {
     output$g_results_table <- DT::renderDT({
       shiny::req(g_test_results())
       df <- g_test_results()$final_table
+
+      # Rétablir l'ordre initial des loci (Overall toujours en dernier)
+      loci_order <- g_test_results()$metadata$loci_names
+      df_loci    <- df[df$ID != "Overall", , drop = FALSE]
+      df_overall <- df[df$ID == "Overall", , drop = FALSE]
+      df_loci$ID <- factor(df_loci$ID, levels = loci_order)
+      df_loci    <- df_loci[order(df_loci$ID), , drop = FALSE]
+      df_loci$ID <- as.character(df_loci$ID)
+      df         <- rbind(df_loci, df_overall)
+
       pretty_names <- c(ID = "Locus", G_obs = "G observed",
                         p_value = "p-value (raw)", q_value = "q-value (FDR-BH)",
                         decision = "Decision (\u03b1 = 0.05)")
@@ -3611,7 +3621,11 @@ server_general_stats <- function(id, rv) {
       if (nrow(df) == 0)
         return(ggplot2::ggplot() + ggplot2::labs(title = "No G-test data available") +
               ggplot2::theme_minimal())
-      df$ID <- factor(df$ID, levels = sort(unique(as.character(df$ID))))
+
+      # Ordre initial des loci tel que dans hf_mat_r() — pas d'ordre alphabétique
+      loci_order <- g_test_results()$metadata$loci_names
+      df$ID <- factor(df$ID, levels = loci_order)
+
       ggplot2::ggplot(df, ggplot2::aes(x = ID, y = G_obs)) +
         ggplot2::geom_point(ggplot2::aes(shape = Significant), size = 3, color = "#7c3aed") +
         ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
