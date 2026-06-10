@@ -420,25 +420,35 @@ server_general_stats <- function(id, rv) {
       db_ready()
       con  <- con_r()
       base <- base_r()
-      
+
       long <- duck_hs_by_pop_locus_long(
-        con       = con,
-        tbl_hf    = tbl_hf_r(),
-        tbl_meta  = tbl_meta_r(),
-        base      = base,
+        con          = con,
+        tbl_hf       = tbl_hf_r(),
+        tbl_meta     = tbl_meta_r(),
+        base         = base,
         missing_code = 0L
       )
-      
+
       shiny::validate(need(nrow(long) > 0, "No Hs results available (check hf/meta tables)."))
-      
-      # Wide matrix: rows = Locus, cols = Population
+
       wide <- tidyr::pivot_wider(
         long,
         names_from  = Population,
         values_from = Hs
       )
-      
+
       wide <- as.data.frame(wide, stringsAsFactors = FALSE)
+
+      # ── Réordonner les lignes selon l'ordre physique DuckDB ────────────────
+      # wide$Locus est en ordre alphabétique (ORDER BY 1 dans duck_hs_by_pop_locus_long)
+      # loci_order_r() donne l'ordre physique MIN(rowid)
+      loci_ordered <- loci_order_r()
+      reorder_idx  <- match(loci_ordered, wide$Locus)
+      reorder_idx  <- reorder_idx[!is.na(reorder_idx)]
+
+      if (length(reorder_idx) > 0)
+        wide <- wide[reorder_idx, , drop = FALSE]
+
       wide
     })
 
@@ -751,31 +761,34 @@ server_general_stats <- function(id, rv) {
         write.table(df, file, sep = "\t", row.names = FALSE, quote = FALSE)
       }
     )
-    
+
     output$gene_diversity_table <- DT::renderDT({
       df <- shiny::req(hs_by_pop_wide_r())
-      
-      df_disp <- df
+
+      df_disp  <- df
       num_cols <- names(df_disp)[vapply(df_disp, is.numeric, logical(1))]
       df_disp[num_cols] <- lapply(df_disp[num_cols], round, 3)
-      
+
       rng <- range(unlist(df[num_cols], use.names = FALSE), na.rm = TRUE)
       if (!all(is.finite(rng)) || diff(rng) == 0) rng <- c(0, 1)
-      
+
       DT::datatable(
         df_disp,
         extensions = "Buttons",
-        options = gs_dt_options(pageLength = 10L),
+        options = c(
+          gs_dt_options(pageLength = 10L),
+          list(order = list())    # désactive tout tri automatique DT
+        ),
         rownames = FALSE,
-        class = "compact nowrap",
+        class    = "compact nowrap",
         callback = DT::JS("table.columns.adjust();")
       ) %>%
         DT::formatStyle(
-          columns = num_cols,
+          columns         = num_cols,
           backgroundColor = DT::styleColorBar(rng, "lightblue"),
-          backgroundSize = "98% 88%",
-          backgroundRepeat = "no-repeat",
-          backgroundPosition = "center",
+          backgroundSize  = "98% 88%",
+          backgroundRepeat    = "no-repeat",
+          backgroundPosition  = "center",
           color = "black"
         )
     })
@@ -794,12 +807,7 @@ server_general_stats <- function(id, rv) {
         utils::write.table(df, file, sep = "\t", row.names = FALSE, quote = FALSE)
       }
     )
-    
-    
-    
-    
-    
-    
+
     # ==================================== FIS SECTION ANALYSIS ===============================================
     fis_context <- reactive({
       level <- input$analysis_level
