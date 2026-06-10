@@ -30,6 +30,83 @@ gs_head <- function() {
     div.dataTables_length { margin-bottom: 10px; }
     div.dt-buttons { margin-top: 6px; margin-bottom: 8px; }
     table.dataTable th, table.dataTable td { white-space: nowrap; }
+    .spg-method-note {
+      background: #f8f9fa;
+      padding: 12px 16px;
+      margin: 0 0 20px 0;
+      border-left: 4px solid;
+      border-radius: 4px;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #333a43;
+    }
+    
+    .btn-action-primary {
+      background: linear-gradient(135deg, #78B7C5 0%, #5A9BA8 100%);
+      border: none;
+      color: white;
+      border-radius: 6px;
+      padding: 8px 16px;
+      transition: all 0.3s ease;
+    }
+    
+    .btn-action-primary:hover {
+      background: linear-gradient(135deg, #5A9BA8 0%, #48808B 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    
+    .btn-download-primary {
+      background: #78B7C5;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      padding: 5px 12px;
+    }
+    
+    .btn-download-secondary {
+      background: #6c757d;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      padding: 5px 12px;
+    }
+    
+    .af-vbox {
+      background: white;
+      border: 0.5px solid rgba(0,0,0,.1);
+      border-radius: 10px;
+      padding: .75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    
+    .af-vbox-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    
+    .af-vbox-label {
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 1px;
+    }
+    
+    .section-title {
+      color: #333a43;
+      text-align: center;
+      margin: 30px 0 20px 0;
+      padding: 10px;
+      border-bottom: 2px solid #CEB175;
+    }
   ")),
     tags$script(HTML("
     $(document).on('shown.bs.tab', 'a[data-toggle=\"tab\"]', function () {
