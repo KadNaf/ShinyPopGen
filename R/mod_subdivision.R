@@ -16,7 +16,8 @@ mod_subdivision_ui <- function(id) {
         "<b>Permutation (FST):</b> genotypes randomly reassigned among populations; one-sided test.",
         "<br>",
         "<b>H<sub>0</sub> (G-test):</b> allele frequencies homogeneous across populations. &nbsp;",
-        "<b>Permutation (G):</b> G log-likelihood ratio statistic; population labels shuffled; one-sided test (G &ge; G<sub>obs</sub>); FDR correction per locus (Benjamini-Hochberg)."
+        "<b>Permutation (G):</b> G log-likelihood ratio statistic; population labels shuffled; ",
+        "one-sided test (G &ge; G<sub>obs</sub>); FDR correction per locus (Benjamini-Hochberg)."
       ))
     ),
 
@@ -33,12 +34,13 @@ mod_subdivision_ui <- function(id) {
         fluidRow(
           column(3,
             h4(icon("sliders"), "Parameters"),
-            numericInput(ns("n_perm_fst"),    "Number of Permutations:",        value = 5000, min = 100, max = 20000, step = 100),
-            numericInput(ns("n_boot_fst"),    "Number of Bootstrap Replicates:", value = 5000, min = 100, max = 20000, step = 100),
-            numericInput(ns("conf_level_fst"),"Confidence Level:",               value = 0.95, min = 0.80, max = 0.99, step = 0.01),
+            numericInput(ns("n_perm_fst"),     "Number of Permutations:",        value = 5000, min = 100,  max = 20000, step = 100),
+            numericInput(ns("n_boot_fst"),     "Number of Bootstrap Replicates:", value = 5000, min = 100,  max = 20000, step = 100),
+            numericInput(ns("conf_level_fst"), "Confidence Level:",               value = 0.95, min = 0.80, max = 0.99,  step = 0.01),
             actionButton(ns("run_FST_Analysis"), "Run FST Analysis",
-                         icon = icon("rocket"),
-                         class = "btn-action-primary btn-block", style = "font-weight: bold;"),
+                         icon  = icon("rocket"),
+                         class = "btn-action-primary btn-block",
+                         style = "font-weight: bold;"),
             tags$small(
               style = "color: #666; margin-top: 6px; display: block;",
               icon("info-circle"),
@@ -54,16 +56,16 @@ mod_subdivision_ui <- function(id) {
                 valueBoxOutput(ns("fst_ci_width_box"),     width = NULL)
               ),
               column(3,
-                valueBoxOutput(ns("global_fst_pvalue_box"),width = NULL),
-                valueBoxOutput(ns("fst_power_box"),        width = NULL)
+                valueBoxOutput(ns("global_fst_pvalue_box"), width = NULL),
+                valueBoxOutput(ns("fst_power_box"),         width = NULL)
               ),
               column(3,
-                valueBoxOutput(ns("significant_loci_fst_box"),  width = NULL),
-                valueBoxOutput(ns("fst_convergence_box"),       width = NULL)
+                valueBoxOutput(ns("significant_loci_fst_box"), width = NULL),
+                valueBoxOutput(ns("fst_convergence_box"),      width = NULL)
               ),
               column(3,
-                valueBoxOutput(ns("analysis_time_fst_box"),width = NULL),
-                valueBoxOutput(ns("fst_quality_box"),      width = NULL)
+                valueBoxOutput(ns("analysis_time_fst_box"), width = NULL),
+                valueBoxOutput(ns("fst_quality_box"),       width = NULL)
               )
             ),
             fluidRow(
@@ -120,28 +122,28 @@ mod_subdivision_ui <- function(id) {
     h2("G-based Permutation Test \u2014 Subdivision", class = "section-title"),
     tags$p(HTML(paste0(
       "G statistic (log-likelihood ratio) par locus, construit sur le tableau de contingence ",
-      "allèles \u00d7 populations. Test global = somme des G par locus. ",
+      "allèles \u00d7 populations. Test global = somme des G par locus (propriété additive). ",
       "Permutation : labels de population shufflés (même schéma que FST). ",
-      "p-value = (b + 1) / (m + 1) o\u00f9 b = nombre de G\u209a\u2091\u02b3\u2098 \u2265 G\u2092\u2087\u2073."
+      "p-value = (b + 1) / (m + 1) où b = nombre de G<sub>perm</sub> &ge; G<sub>obs</sub>. ",
+      "Correction FDR Benjamini-Hochberg par locus."
     )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(
         width = 12,
         title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
-                    icon("flask"), "G-test: parameters"),
+                    icon("flask"),
+                    "G-test: parameters"),
         solidHeader = TRUE, status = "primary",
         fluidRow(
           column(3,
             h4(icon("sliders"), "Parameters"),
-            numericInput(ns("n_perm_g"), "Number of Permutations:",
-                        value = 5000, min = 5000, max = 50000, step = 1000),
-            numericInput(ns("conf_level_g"), "Confidence Level:",
-                        value = 0.95, min = 0.80, max = 0.99, step = 0.01),
+            numericInput(ns("n_perm_g"),     "Number of Permutations:",  value = 5000, min = 5000, max = 50000, step = 1000),
+            numericInput(ns("conf_level_g"), "Confidence Level:",         value = 0.95, min = 0.80, max = 0.99,  step = 0.01),
             actionButton(ns("run_G_test"), "Run G-test",
-                        icon  = icon("rocket"),
-                        class = "btn-action-primary btn-block",
-                        style = "font-weight: bold;"),
+                         icon  = icon("rocket"),
+                         class = "btn-action-primary btn-block",
+                         style = "font-weight: bold;"),
             tags$small(
               style = "color: #666; margin-top: 6px; display: block;",
               icon("info-circle"),
@@ -150,7 +152,7 @@ mod_subdivision_ui <- function(id) {
           ),
           column(9,
             h4(icon("chart-area"), "G-test Summary",
-              style = "font-weight: 600; color: #2c3e50; margin-bottom: 15px;"),
+               style = "font-weight: 600; color: #2c3e50; margin-bottom: 15px;"),
             fluidRow(
               column(3,
                 valueBoxOutput(ns("g_global_obs_box"), width = NULL),
@@ -185,7 +187,8 @@ mod_subdivision_ui <- function(id) {
       box(
         width = 12,
         title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
-                    icon("table"), "G-test Results"),
+                    icon("table"),
+                    "G-test Results"),
         solidHeader = TRUE, status = "primary",
         tabsetPanel(
           tabPanel("G-test results",
