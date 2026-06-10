@@ -3243,7 +3243,7 @@ server_general_stats <- function(id, rv) {
     #
     # G = 2 * sum(O * log(O/E))  — même formule que g_stat_from_counts() dans ld_pvalues_cpp
     #
-    # Permutation (piraté du FST) : shuffle global des pop labels (pas des col_ids intra-pop).
+    # Permutation (piraté du FST) : shuffle global des pop labels.
     # G_global = sum(G_locus) — propriété additive, même logique que Gall_obs dans ld_pvalues_cpp.
     # p = (b+1)/(m+1) — même formule que dans ld_pvalues_cpp.
     # ==========================================#
@@ -3253,13 +3253,10 @@ server_general_stats <- function(id, rv) {
     g_test_timing  <- reactiveVal(NULL)
 
     ## G sur tableau allèle x population — piraté de g_stat_from_counts() ----
-    ## cnt   : matrice n_pops x n_alleles (entiers)
-    ## retourne G scalaire ou NA
     .g_stat_allele_pop <- function(cnt) {
-      nr <- nrow(cnt); nc <- ncol(cnt)
+      nr  <- nrow(cnt); nc <- ncol(cnt)
       rs  <- rowSums(cnt); cs <- colSums(cnt); n <- sum(cnt)
-      if (n == 0L || nr < 2L || nc < 2L) return(NA_real_)
-      # au moins 2 lignes non-nulles et 2 colonnes non-nulles (informative_table)
+      if (n == 0L || nr < 2L || nc < 2L)      return(NA_real_)
       if (sum(rs > 0L) < 2L || sum(cs > 0L) < 2L) return(NA_real_)
       E  <- outer(rs, cs) / n
       ok <- cnt > 0L & E > 0
@@ -3267,18 +3264,12 @@ server_general_stats <- function(id, rv) {
       2 * sum(cnt[ok] * log(cnt[ok] / E[ok]))
     }
 
-    ## Construire le tableau allèle x population pour un locus ----
-    ## pop_codes : integer vector (codes numériques des populations)
-    ## a1, a2    : integer vectors (allèles décodés, même longueur que pop_codes)
-    ## pops      : niveaux de populations triés
-    ## Retourne une matrice n_pops x n_alleles ou NULL si non informatif
+    ## Construire tableau allèle x population pour un locus ----
     .build_allele_pop_table <- function(pop_codes, a1, a2, pops) {
       all_alleles <- sort(unique(c(a1, a2)))
       n_a   <- length(all_alleles)
       n_pop <- length(pops)
       if (n_a < 2L || n_pop < 2L) return(NULL)
-
-      # tabulate() : même logique que la boucle sur row_ids/col_ids dans ld_pvalues_cpp
       cnt <- matrix(0L, nrow = n_pop, ncol = n_a)
       for (pi in seq_len(n_pop)) {
         idx <- pop_codes == pops[pi]
@@ -3326,6 +3317,7 @@ server_general_stats <- function(id, rv) {
           shiny::need(isTRUE(is.finite(base)) && base > 1L, "Invalid base from params")
         )
 
+        # Ordre des loci tel que dans hf_mat_r() — ORDER BY locus_id DuckDB
         loci_names <- colnames(mat)[-1L]
         if (is.null(loci_names) || length(loci_names) == 0L)
           loci_names <- paste0("L", seq_len(ncol(mat) - 1L))
@@ -3345,11 +3337,10 @@ server_general_stats <- function(id, rv) {
         pop_names <- as.character(pop_df$Population[seq_along(as.character(pops))])
 
         # ── Décoder les génotypes une seule fois (gt = a1*base + a2) ─────────
-        # Même décodage que dans ld_pvalues_cpp : gt/base et gt%%base
         loci_a1  <- vector("list", n_loci)
         loci_a2  <- vector("list", n_loci)
-        loci_pc  <- vector("list", n_loci)   # pop_codes filtrés (indices valides)
-        loci_idx <- vector("list", n_loci)   # indices globaux valides dans mat
+        loci_pc  <- vector("list", n_loci)
+        loci_idx <- vector("list", n_loci)
 
         for (j in seq_len(n_loci)) {
           g   <- as.integer(mat[, j + 1L])
@@ -3360,11 +3351,10 @@ server_general_stats <- function(id, rv) {
           loci_a1[[j]]  <- a1[ok2]
           loci_a2[[j]]  <- a2[ok2]
           loci_pc[[j]]  <- pop_codes[ok][ok2]
-          loci_idx[[j]] <- which(ok)[ok2]    # indices dans mat (1-based) — pour permutation
+          loci_idx[[j]] <- which(ok)[ok2]
         }
 
-        # ── G observé par locus ───────────────────────────────────────────────
-        # Tableau allèle x population, même G que g_stat_from_counts dans ld_pvalues_cpp
+        # ── G observé par locus — dans l'ordre exact de loci_names ───────────
         g_obs <- vapply(seq_len(n_loci), function(j) {
           cnt <- .build_allele_pop_table(loci_pc[[j]], loci_a1[[j]], loci_a2[[j]], pops)
           if (is.null(cnt)) return(NA_real_)
@@ -3372,21 +3362,12 @@ server_general_stats <- function(id, rv) {
         }, numeric(1))
         names(g_obs) <- loci_names
 
-        # G global observé = somme des G par locus (propriété additive — Gall_obs dans ld_pvalues_cpp)
+        # G global observé = somme des G par locus (propriété additive)
         g_obs_overall <- sum(g_obs, na.rm = TRUE)
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 15)
 
         # ── Permutations ──────────────────────────────────────────────────────
-        # Piraté du FST : shuffle global des pop_codes (permute_pop_labels).
-        # Différence vs LD : dans ld_pvalues_cpp on shuffle col_ids intra-population
-        # (permutation des génotypes au locus B au sein de chaque population).
-        # Ici on shuffle les pop labels globalement — même H0 que le test FST
-        # (pas de structure de population).
-        # Pour chaque permutation b :
-        #   perm_pc   = sample(pop_codes)
-        #   G_perm[j] = G calculé avec perm_pc sur le locus j
-        #   G_perm_global = sum(G_perm)   — même que s_all dans ld_pvalues_cpp
         n_perm         <- as.integer(input$n_perm_g)
         G_null_locus   <- matrix(NA_real_, nrow = n_perm, ncol = n_loci)
         G_null_overall <- numeric(n_perm)
@@ -3395,10 +3376,9 @@ server_general_stats <- function(id, rv) {
         tick <- max(1L, n_perm %/% 10L)
 
         for (b in seq_len(n_perm)) {
-          perm_pc <- sample(pop_codes)   # shuffle global — même H0 que FST
+          perm_pc <- sample(pop_codes)
 
           g_perm <- vapply(seq_len(n_loci), function(j) {
-            # pop_codes permutés aux indices valides de ce locus
             pc_j <- perm_pc[loci_idx[[j]]]
             cnt  <- .build_allele_pop_table(pc_j, loci_a1[[j]], loci_a2[[j]], pops)
             if (is.null(cnt)) return(NA_real_)
@@ -3406,7 +3386,7 @@ server_general_stats <- function(id, rv) {
           }, numeric(1))
 
           G_null_locus[b, ]  <- g_perm
-          G_null_overall[b]  <- sum(g_perm, na.rm = TRUE)  # s_all de ld_pvalues_cpp
+          G_null_overall[b]  <- sum(g_perm, na.rm = TRUE)
 
           if (b %% tick == 0L)
             shinyWidgets::updateProgressBar(
@@ -3417,8 +3397,7 @@ server_general_stats <- function(id, rv) {
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 95)
 
-        # ── P-values : p = (b+1)/(m+1) — même formule que ld_pvalues_cpp ────
-        # ge_pop[p] / nbperms dans le C++ devient (sum(null >= obs) + 1) / (n_perm + 1)
+        # ── P-values : p = (b+1)/(m+1) ───────────────────────────────────────
         p_locus <- vapply(seq_len(n_loci), function(j) {
           obs  <- g_obs[j]
           if (!is.finite(obs)) return(NA_real_)
@@ -3429,26 +3408,27 @@ server_general_stats <- function(id, rv) {
         }, numeric(1))
         names(p_locus) <- loci_names
 
-        # P-value globale (ge_all dans ld_pvalues_cpp)
         p_overall <- {
           null <- G_null_overall[is.finite(G_null_overall)]
           if (length(null) == 0L || !is.finite(g_obs_overall)) NA_real_
           else (sum(null >= g_obs_overall) + 1) / (length(null) + 1)
         }
 
-        # FDR Benjamini-Hochberg
         q_locus        <- p.adjust(p_locus, method = "BH")
         names(q_locus) <- loci_names
 
-        # ── Tables finales (Overall en dernière ligne — même convention que FST) ─
+        # ── Tables finales ────────────────────────────────────────────────────
+        # Ordre verrouillé = ordre de loci_names (= ordre DuckDB hf_mat_r())
+        # On ne trie pas, on construit directement dans le bon ordre
         per_locus_tbl <- data.frame(
-          ID       = loci_names,
+          ID       = loci_names,          # ordre DuckDB garanti
           G_obs    = g_obs,
           p_value  = p_locus,
           q_value  = q_locus,
           decision = ifelse(!is.na(q_locus) & q_locus < 0.05,
                             "Significant", "Not significant"),
-          stringsAsFactors = FALSE
+          stringsAsFactors = FALSE,
+          row.names = NULL
         )
 
         overall_row <- data.frame(
@@ -3458,9 +3438,11 @@ server_general_stats <- function(id, rv) {
           q_value  = NA_real_,
           decision = if (!is.na(p_overall) && p_overall < 0.05)
                       "Significant" else "Not significant",
-          stringsAsFactors = FALSE
+          stringsAsFactors = FALSE,
+          row.names = NULL
         )
 
+        # Overall toujours en dernière ligne
         final_tbl <- rbind(per_locus_tbl, overall_row)
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 100)
@@ -3474,7 +3456,7 @@ server_general_stats <- function(id, rv) {
           G_null_overall = G_null_overall,
           metadata       = list(
             n_perm     = n_perm,
-            loci_names = loci_names,
+            loci_names = loci_names,   # ordre DuckDB conservé
             pop_names  = pop_names
           )
         ))
@@ -3586,54 +3568,81 @@ server_general_stats <- function(id, rv) {
     ## G-test results table ----
     output$g_results_table <- DT::renderDT({
       shiny::req(g_test_results())
-      df <- g_test_results()$final_table
 
-      # Rétablir l'ordre initial des loci (Overall toujours en dernier)
-      loci_order <- g_test_results()$metadata$loci_names
-      df_loci    <- df[df$ID != "Overall", , drop = FALSE]
+      # final_table est déjà dans l'ordre DuckDB (loci_names) + Overall en dernier
+      # On sépare et recolle juste pour garantir Overall en dernière ligne
+      df        <- g_test_results()$final_table
+      df_loci   <- df[df$ID != "Overall", , drop = FALSE]
       df_overall <- df[df$ID == "Overall", , drop = FALSE]
-      df_loci$ID <- factor(df_loci$ID, levels = loci_order)
-      df_loci    <- df_loci[order(df_loci$ID), , drop = FALSE]
-      df_loci$ID <- as.character(df_loci$ID)
-      df         <- rbind(df_loci, df_overall)
+      df        <- rbind(df_loci, df_overall)
 
-      pretty_names <- c(ID = "Locus", G_obs = "G observed",
-                        p_value = "p-value (raw)", q_value = "q-value (FDR-BH)",
-                        decision = "Decision (\u03b1 = 0.05)")
-      DT::datatable(df, extensions = "Buttons",
-        options = list(dom = "Bfrtip", buttons = c("copy"), pageLength = 15, scrollX = TRUE),
-        rownames = FALSE, colnames = unname(pretty_names[names(df)])
+      pretty_names <- c(
+        ID       = "Locus",
+        G_obs    = "G observed",
+        p_value  = "p-value (raw)",
+        q_value  = "q-value (FDR-BH)",
+        decision = "Decision (\u03b1 = 0.05)"
+      )
+
+      DT::datatable(
+        df,
+        extensions = "Buttons",
+        options = list(
+          dom        = "Bfrtip",
+          buttons    = c("copy"),
+          pageLength = 15,
+          scrollX    = TRUE,
+          order      = list()        # désactive tout tri automatique DT
+        ),
+        rownames = FALSE,
+        colnames = unname(pretty_names[names(df)])
       ) %>%
-        DT::formatRound(columns = intersect(c("G_obs", "p_value", "q_value"), names(df)), digits = 4) %>%
-        DT::formatStyle("q_value",
-          backgroundColor = DT::styleInterval(c(0.01, 0.05), c("#f8d7da", "#fff3cd", "white"))) %>%
-        DT::formatStyle("decision",
+        DT::formatRound(
+          columns = intersect(c("G_obs", "p_value", "q_value"), names(df)),
+          digits  = 4
+        ) %>%
+        DT::formatStyle(
+          "q_value",
+          backgroundColor = DT::styleInterval(c(0.01, 0.05), c("#f8d7da", "#fff3cd", "white"))
+        ) %>%
+        DT::formatStyle(
+          "decision",
           color      = DT::styleEqual(c("Significant", "Not significant"), c("#721c24", "#155724")),
-          fontWeight = "bold")
+          fontWeight = "bold"
+        )
     })
 
     ## G-test visualization ----
     .make_g_plot <- function() {
       shiny::req(g_test_results())
-      df <- g_test_results()$final_table %>%
-        dplyr::filter(ID != "Overall") %>%
-        dplyr::mutate(Significant = !is.na(q_value) & q_value < 0.05)
+
+      df <- g_test_results()$final_table
+      df <- df[df$ID != "Overall", , drop = FALSE]
+
       if (nrow(df) == 0)
-        return(ggplot2::ggplot() + ggplot2::labs(title = "No G-test data available") +
+        return(ggplot2::ggplot() +
+              ggplot2::labs(title = "No G-test data available") +
               ggplot2::theme_minimal())
 
-      # Ordre initial des loci tel que dans hf_mat_r() — pas d'ordre alphabétique
-      loci_order <- g_test_results()$metadata$loci_names
-      df$ID <- factor(df$ID, levels = loci_order)
+      df <- df %>% dplyr::mutate(Significant = !is.na(q_value) & q_value < 0.05)
+
+      # Ordre = ordre d'apparition dans final_table = ordre DuckDB
+      df$ID <- factor(df$ID, levels = unique(df$ID))
 
       ggplot2::ggplot(df, ggplot2::aes(x = ID, y = G_obs)) +
         ggplot2::geom_point(ggplot2::aes(shape = Significant), size = 3, color = "#7c3aed") +
         ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-        ggplot2::labs(title = "G-statistic estimates by locus",
-                      x = "Locus", y = "G observed", shape = "FDR q < 0.05") +
+        ggplot2::labs(
+          title = "G-statistic estimates by locus",
+          x     = "Locus",
+          y     = "G observed",
+          shape = "FDR q < 0.05"
+        ) +
         ggplot2::theme_minimal() +
-        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
-                      plot.title  = ggplot2::element_text(face = "bold", hjust = 0.5))
+        ggplot2::theme(
+          axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+          plot.title  = ggplot2::element_text(face = "bold", hjust = 0.5)
+        )
     }
 
     output$g_plot <- renderPlot({ .make_g_plot() })
