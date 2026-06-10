@@ -600,48 +600,64 @@ server_general_stats <- function(id, rv) {
                         choices = choices,
                         selected = choices[1])
     })
-    
+
     # ---- Table: per-locus stats for selected population
     output$basic_stats_by_pop_selected <- DT::renderDT({
       db_ready()
       con  <- con_r()
       base <- base_r()
-      
+
       shiny::req(input$selected_pop_overall)
       pop_name <- input$selected_pop_overall
-      
+
       df <- duck_pop_stats_by_pop_one(
-        con       = con,
-        pop_name  = pop_name,
-        tbl_hf    = tbl_hf_r(),
-        tbl_meta  = tbl_meta_r(),
-        base      = base,
+        con          = con,
+        pop_name     = pop_name,
+        tbl_hf       = tbl_hf_r(),
+        tbl_meta     = tbl_meta_r(),
+        base         = base,
         missing_code = 0L
       )
-      
+
       if (is.null(df) || nrow(df) == 0) {
         return(
           DT::datatable(
             data.frame(Message = paste("No data available for population:", pop_name)),
             extensions = "Buttons",
-            options = gs_dt_options(pageLength = 10L),
-            rownames = FALSE,
-            class = "compact nowrap",
-            callback = DT::JS("table.columns.adjust();")
+            options    = gs_dt_options(pageLength = 10L),
+            rownames   = FALSE,
+            class      = "compact nowrap",
+            callback   = DT::JS("table.columns.adjust();")
           )
         )
       }
-      
+
+      # ── Réordonner selon l'ordre physique DuckDB ──────────────────────────
+      # duck_pop_stats_by_pop_one() retourne ORDER BY locus (alphabétique)
+      # On identifie la colonne locus (Locus, Marker, locus_id, etc.)
+      locus_col_name <- intersect(c("Locus", "Marker", "locus_id", "locus"), names(df))[1]
+
+      if (!is.na(locus_col_name)) {
+        loci_ordered <- loci_order_r()
+        reorder_idx  <- match(loci_ordered, df[[locus_col_name]])
+        reorder_idx  <- reorder_idx[!is.na(reorder_idx)]
+        if (length(reorder_idx) > 0)
+          df <- df[reorder_idx, , drop = FALSE]
+      }
+
       df_display <- df
-      num_cols <- vapply(df_display, is.numeric, logical(1))
+      num_cols   <- vapply(df_display, is.numeric, logical(1))
       df_display[num_cols] <- lapply(df_display[num_cols], round, 5)
-      
+
       DT::datatable(
         df_display,
         extensions = "Buttons",
-        options = gs_dt_options(pageLength = 10L),
+        options    = c(
+          gs_dt_options(pageLength = 10L),
+          list(order = list())   # désactive tout tri automatique DT
+        ),
         rownames = FALSE,
-        class = "compact nowrap",
+        class    = "compact nowrap",
         callback = DT::JS("table.columns.adjust();")
       )
     })
@@ -679,44 +695,66 @@ server_general_stats <- function(id, rv) {
     # 1) Population-specific (per locus) stats
     output$download_pop_stats <- downloadHandler(
       filename = function() paste0("pop_stats_", input$selected_pop_overall, "_", Sys.Date(), ".csv"),
-      content = function(file) {
+      content  = function(file) {
         db_ready()
         con  <- con_r()
         base <- base_r()
         shiny::req(input$selected_pop_overall)
-        
+
         df <- duck_pop_stats_by_pop_one(
-          con       = con,
-          pop_name  = input$selected_pop_overall,
-          tbl_hf    = tbl_hf_r(),
-          tbl_meta  = tbl_meta_r(),
-          base      = base,
+          con          = con,
+          pop_name     = input$selected_pop_overall,
+          tbl_hf       = tbl_hf_r(),
+          tbl_meta     = tbl_meta_r(),
+          base         = base,
           missing_code = 0L
         )
-        
-        if (is.null(df) || nrow(df) == 0) df <- data.frame(Message = "No data available")
+
+        if (is.null(df) || nrow(df) == 0) {
+          df <- data.frame(Message = "No data available")
+        } else {
+          locus_col_name <- intersect(c("Locus", "Marker", "locus_id", "locus"), names(df))[1]
+          if (!is.na(locus_col_name)) {
+            loci_ordered <- loci_order_r()
+            reorder_idx  <- match(loci_ordered, df[[locus_col_name]])
+            reorder_idx  <- reorder_idx[!is.na(reorder_idx)]
+            if (length(reorder_idx) > 0)
+              df <- df[reorder_idx, , drop = FALSE]
+          }
+        }
         write.csv(df, file, row.names = FALSE)
       }
     )
-    
+
     output$download_pop_stats_txt <- downloadHandler(
       filename = function() paste0("pop_stats_", input$selected_pop_overall, "_", Sys.Date(), ".txt"),
-      content = function(file) {
+      content  = function(file) {
         db_ready()
         con  <- con_r()
         base <- base_r()
         shiny::req(input$selected_pop_overall)
-        
+
         df <- duck_pop_stats_by_pop_one(
-          con       = con,
-          pop_name  = input$selected_pop_overall,
-          tbl_hf    = tbl_hf_r(),
-          tbl_meta  = tbl_meta_r(),
-          base      = base,
+          con          = con,
+          pop_name     = input$selected_pop_overall,
+          tbl_hf       = tbl_hf_r(),
+          tbl_meta     = tbl_meta_r(),
+          base         = base,
           missing_code = 0L
         )
-        
-        if (is.null(df) || nrow(df) == 0) df <- data.frame(Message = "No data available")
+
+        if (is.null(df) || nrow(df) == 0) {
+          df <- data.frame(Message = "No data available")
+        } else {
+          locus_col_name <- intersect(c("Locus", "Marker", "locus_id", "locus"), names(df))[1]
+          if (!is.na(locus_col_name)) {
+            loci_ordered <- loci_order_r()
+            reorder_idx  <- match(loci_ordered, df[[locus_col_name]])
+            reorder_idx  <- reorder_idx[!is.na(reorder_idx)]
+            if (length(reorder_idx) > 0)
+              df <- df[reorder_idx, , drop = FALSE]
+          }
+        }
         write.table(df, file, sep = "\t", row.names = FALSE, quote = FALSE)
       }
     )

@@ -14,7 +14,7 @@ null_alleles_UI <- function(id) {
   fluidPage(
     tags$head(gs_head()),
     
-    module_banner("atom", "Null Allele Estimation, FST-ENA Correction & DCSE-INA Genetic Distance",
+    module_banner("circle-notch", "Null Allele Estimation, FST-ENA Correction & DCSE-INA Genetic Distance",
       "EM algorithm · FreeNA — Chapuis & Estoup (2007) · Weir (1996) · Cavalli-Sforza & Edwards (1967)",
       "#78B7C5"),
     
