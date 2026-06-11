@@ -142,15 +142,15 @@ server_null_alleles <- function(id, rv) {
 
     # EM algorithm
     em_freena <- function(gt_vec, base, treat = "absent") {
-      efpop <- length(gt_vec)
+      efpop <- length(gt_vec)  # Nombre total d'individus (génotypés + manquants)
       absent_msk <- is.na(gt_vec) | gt_vec <= 0L
       n_absent <- sum(absent_msk)
       valid_gt <- gt_vec[!absent_msk]
 
       empty <- list(rd = 0.0, pfreq = numeric(0), genefreq_obs = numeric(0),
-                    H_ii = numeric(0), H_iX = numeric(0), N = 0L, N_valid = 0L,
-                    efpop = efpop, n_absent = n_absent, n_null_homo = 0L,
-                    alleles = character(0), n_valid_geno = 0L)
+                    H_ii = numeric(0), H_iX = numeric(0), N = efpop,  # N = total individus
+                    N_valid = 0L, efpop = efpop, n_absent = n_absent, 
+                    n_null_homo = 0L, alleles = character(0), n_valid_geno = 0L)
 
       if (length(valid_gt) == 0L) return(empty)
 
@@ -166,15 +166,15 @@ server_null_alleles <- function(id, rv) {
       all_alleles <- all_alleles[all_alleles >= 0L & all_alleles != null_code]
 
       if (length(all_alleles) == 0L) {
-        empty$N <- efpop - n_absent
+        empty$N <- efpop
         empty$n_null_homo <- n_null_homo
         return(empty)
       }
 
       alleles <- as.character(all_alleles)
       names(alleles) <- alleles
-      N_total <- efpop - n_absent
-      N_valid <- N_total - n_null_homo
+      N_total <- efpop  # Total = efpop (inclut manquants)
+      N_valid <- efpop - n_absent - n_null_homo  # Génotypes non-nuls
 
       if (N_valid <= 0L) {
         empty$N <- N_total
@@ -808,25 +808,24 @@ server_null_alleles <- function(id, rv) {
 
         setProgress(0.95, detail = "Assembling results...")
 
-        # Table 1
+        # Table 1: p_nulls per locus x population
+        # N = nombre total d'individus (efpop = génotypés + manquants)
         t1_rows <- list()
         for (loc in markers) {
           for (pop in pops) {
             e <- em_res[[loc]][[pop]]
             p_nulls_val <- e$rd
-            n_val <- e$N
+            n_val <- e$N  # N = total individus (efpop)
             n_exp_val <- e$N * (e$rd^2)
             p_nulls_N_val <- p_nulls_val * n_val
-            if (treats[loc] == "null_homo") {
-              n_blanks_obs <- e$n_absent + e$n_null_homo
-            } else {
-              n_blanks_obs <- e$n_absent
-            }
+            
             t1_rows[[length(t1_rows) + 1L]] <- data.frame(
-              Locus = loc, Population = pop, Coding = as.character(treats[loc] %||% "absent"),
-              p_nulls = round(p_nulls_val, 6), N = n_val,
-              N_exp_blanks = round(n_exp_val, 6), p_nulls_x_N = round(p_nulls_N_val, 6),
-              N_blanks_obs = n_blanks_obs, stringsAsFactors = FALSE)
+              Locus = loc, Population = pop,
+              p_nulls = round(p_nulls_val, 6), 
+              N = n_val,
+              N_exp_blanks = round(n_exp_val, 6), 
+              p_nulls_x_N = round(p_nulls_N_val, 6),
+              stringsAsFactors = FALSE)
           }
         }
         t1 <- do.call(rbind, t1_rows)
@@ -834,7 +833,7 @@ server_null_alleles <- function(id, rv) {
         t1 <- t1[order(t1$Locus, t1$Population), ]
         t1$Locus <- as.character(t1$Locus)
 
-        # Table 2
+        # Table 2: Global summary per locus (sans p-value)
         t2_rows <- lapply(markers, function(loc) {
           sub <- t1[t1$Locus == loc, , drop = FALSE]
           valid <- !is.na(sub$p_nulls) & sub$N > 0
@@ -842,22 +841,21 @@ server_null_alleles <- function(id, rv) {
             av_p <- sum(sub$p_nulls[valid] * sub$N[valid]) / sum(sub$N[valid])
             N_tot <- sum(sub$N[valid])
             N_blanks_exp <- sum(sub$N_exp_blanks[valid])
-            N_blanks_obs <- sum(sub$N_blanks_obs[valid])
             f_expBlanks <- N_blanks_exp / N_tot
           } else {
             av_p <- NA_real_
             N_tot <- sum(sub$N[valid], na.rm = TRUE)
             N_blanks_exp <- NA_real_
-            N_blanks_obs <- NA_real_
             f_expBlanks <- NA_real_
           }
           data.frame(
-            Locus = loc, Coding = as.character(treats[loc] %||% "absent"),
+            Locus = loc,
             Av_p_nulls = round(av_p, 6),
             Av_N_exp_blanks = round(mean(sub$N_exp_blanks[valid], na.rm = TRUE), 6),
-            N_tot = N_tot, N_blanks_obs = N_blanks_obs,
-            N_blanks_exp = round(N_blanks_exp, 6), f_expBlanks = round(f_expBlanks, 6),
-            p_value = 1, p_nulls = round(av_p, 6), stringsAsFactors = FALSE)
+            N_tot = N_tot,
+            N_blanks_exp = round(N_blanks_exp, 6),
+            f_expBlanks = round(f_expBlanks, 6),
+            stringsAsFactors = FALSE)
         })
         t2 <- do.call(rbind, t2_rows)
 
@@ -913,7 +911,7 @@ server_null_alleles <- function(id, rv) {
       lines
     }
 
-    # File 1 downloads
+    # File 1 downloads (sans p-value)
     output$dl_file1_csv <- downloadHandler(
       filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".csv"),
       content = function(file) {
@@ -925,8 +923,8 @@ server_null_alleles <- function(id, rv) {
         write_with_header(hdr, t1_exp, file, sep = ",")
         write("", file = file, append = TRUE)
         write("# Global summary per locus (N-weighted mean)", file = file, append = TRUE)
-        t2_exp <- r$t2[, c("Locus", "Av_p_nulls", "Av_N_exp_blanks", "N_tot", "N_blanks_obs", "N_blanks_exp", "f_expBlanks", "p_value", "p_nulls")]
-        names(t2_exp) <- c("Locus", "Av(p_nulls)", "Av(N_exp_blanks)", "N_tot", "N_blanks_obs", "N_blanks_exp", "f(expBlanks)", "p-value", "p_nulls")
+        t2_exp <- r$t2[, c("Locus", "Av_p_nulls", "Av_N_exp_blanks", "N_tot", "N_blanks_exp", "f_expBlanks")]
+        names(t2_exp) <- c("Locus", "Av(p_nulls)", "Av(N_exp_blanks)", "N_tot", "N_blanks_exp", "f(expBlanks)")
         write.table(t2_exp, file = file, sep = ",", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
       }
     )
@@ -942,8 +940,8 @@ server_null_alleles <- function(id, rv) {
         write_with_header(hdr, t1_exp, file, sep = "\t")
         write("", file = file, append = TRUE)
         write("# Global summary per locus (N-weighted mean)", file = file, append = TRUE)
-        t2_exp <- r$t2[, c("Locus", "Av_p_nulls", "Av_N_exp_blanks", "N_tot", "N_blanks_obs", "N_blanks_exp", "f_expBlanks", "p_value", "p_nulls")]
-        names(t2_exp) <- c("Locus", "Av(p_nulls)", "Av(N_exp_blanks)", "N_tot", "N_blanks_obs", "N_blanks_exp", "f(expBlanks)", "p-value", "p_nulls")
+        t2_exp <- r$t2[, c("Locus", "Av_p_nulls", "Av_N_exp_blanks", "N_tot", "N_blanks_exp", "f_expBlanks")]
+        names(t2_exp) <- c("Locus", "Av(p_nulls)", "Av(N_exp_blanks)", "N_tot", "N_blanks_exp", "f(expBlanks)")
         write.table(t2_exp, file = file, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
       }
     )
@@ -1166,8 +1164,8 @@ server_null_alleles <- function(id, rv) {
     output$dt_t2 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t2) > 0, "No data yet. Click Compute."))
-      d <- r$t2[, c("Locus", "Av_p_nulls", "Av_N_exp_blanks", "N_tot", "N_blanks_obs", "N_blanks_exp", "f_expBlanks", "p_value", "p_nulls")]
-      names(d) <- c("Locus", "Av(p_nulls)", "Av(N_exp_blanks)", "N_tot", "N_blanks_obs", "N_blanks_exp", "f(expBlanks)", "p-value", "p_nulls")
+      d <- r$t2[, c("Locus", "Av_p_nulls", "Av_N_exp_blanks", "N_tot", "N_blanks_exp", "f_expBlanks")]
+      names(d) <- c("Locus", "Av(p_nulls)", "Av(N_exp_blanks)", "N_tot", "N_blanks_exp", "f(expBlanks)")
       DT::datatable(d, rownames = FALSE, options = list(pageLength = 20, scrollX = TRUE, dom = "lftip"),
         class = "compact hover stripe") |>
         DT::formatRound("Av(p_nulls)", 6) |> DT::formatRound("Av(N_exp_blanks)", 6) |>
@@ -1200,7 +1198,7 @@ server_null_alleles <- function(id, rv) {
         v <- mat[i, j]
         if (is.na(v)) return('<td style="color:#94a3b8;">NA</td>')
         bg <- clrs[findInterval(v, thr) + 1L]
-        sprintf('<td style="background:%s;">%s</td>', bg, round(v, fmt))
+        sprintf('<td style="background:%s;">%s%s', bg, round(v, fmt), '</tr>')
       }
       thead <- paste0('<tr><th></th>', paste(sprintf('<th>%s</th>', pops[-n]), collapse = ""), '</tr>')
       tbody <- paste(sapply(seq_len(n), function(i) {
