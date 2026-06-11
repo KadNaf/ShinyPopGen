@@ -10,7 +10,7 @@ server_null_alleles <- function(id, rv) {
       if (is.null(x) || length(x) == 0L || identical(x, "") || all(is.na(x))) default
       else as.character(x[[1]])
     }
-    sql_id   <- function(con, x) as.character(DBI::dbQuoteIdentifier(con, x))
+    sql_id <- function(con, x) as.character(DBI::dbQuoteIdentifier(con, x))
     treat_id <- function(loc) paste0("coding_", gsub("[^A-Za-z0-9]", "_", loc))
 
     ci_bounds <- function(alpha) {
@@ -18,8 +18,8 @@ server_null_alleles <- function(id, rv) {
            label = paste0(round((1 - alpha) * 100, 3), "% CI"))
     }
 
-    db_tick    <- reactive({ rv$db_tick })
-    con_r      <- reactive({ req(rv$con); rv$con })
+    db_tick <- reactive({ rv$db_tick })
+    con_r <- reactive({ req(rv$con); rv$con })
     tbl_meta_r <- reactive({ rv$tbl_meta %||% "meta" })
 
     tbl_hf_r <- reactive({
@@ -50,8 +50,7 @@ server_null_alleles <- function(id, rv) {
       b <- suppressWarnings(as.integer(b))
       if (length(b) == 1L && is.finite(b) && b > 1L) return(as.integer(b))
       con <- con_r()
-      if (DBI::dbExistsTable(con, "params") &&
-          exists(".duckdb_get_params", mode = "function")) {
+      if (DBI::dbExistsTable(con, "params") && exists(".duckdb_get_params", mode = "function")) {
         p <- .duckdb_get_params(con)
         b <- suppressWarnings(as.integer(p$base %||% p$base_scalar_full %||% p$base_scalar_preview))
         if (length(b) == 1L && is.finite(b) && b > 1L) return(as.integer(b))
@@ -331,7 +330,7 @@ server_null_alleles <- function(id, rv) {
         hf_q, meta_q, hi_q, mi_q, hl_q, pop_q))
     })
 
-    # Compute functions (simplified for brevity - keep from previous version)
+    # Compute FST global full
     compute_fst_global_full <- function(em_res) {
       markers <- names(em_res)
       pops <- names(em_res[[markers[1]]])
@@ -398,8 +397,248 @@ server_null_alleles <- function(id, rv) {
            s1_vec = s1_vec, s3_vec = s3_vec, s1c_vec = s1c_vec, s3c_vec = s3c_vec, markers = markers)
     }
 
-    # Simplified compute_fst_pairwise, compute_dc_pairwise, compute_per_locus_pair
-    # (keep from previous working version - too long for this response)
+    # Compute pairwise FST
+    compute_fst_pairwise <- function(em_res) {
+      markers <- names(em_res)
+      pops <- names(em_res[[markers[1]]])
+      n_pops <- length(pops)
+      if (n_pops < 2L) return(list(matrix_raw = NULL, matrix_ena = NULL, long = data.frame(),
+                                   s1_raw = NULL, s3_raw = NULL, s1_ena = NULL, s3_ena = NULL, pairs = NULL))
+      pairs <- combn(pops, 2, simplify = FALSE)
+      n_pairs <- length(pairs)
+      s12p <- matrix(0.0, n_pops, n_pops, dimnames = list(pops, pops))
+      s32p <- matrix(0.0, n_pops, n_pops, dimnames = list(pops, pops))
+      s12pc <- matrix(0.0, n_pops, n_pops, dimnames = list(pops, pops))
+      s32pc <- matrix(0.0, n_pops, n_pops, dimnames = list(pops, pops))
+      s1_raw_ml <- matrix(0.0, n_pairs, length(markers))
+      s3_raw_ml <- matrix(0.0, n_pairs, length(markers))
+      s1_ena_ml <- matrix(0.0, n_pairs, length(markers))
+      s3_ena_ml <- matrix(0.0, n_pairs, length(markers))
+
+      for (li in seq_along(markers)) {
+        loc <- markers[li]
+        em_loc <- em_res[[loc]]
+        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
+        for (ii in seq_len(n_pops - 1L)) {
+          for (jj in seq(ii + 1L, n_pops)) {
+            pi_n <- pops[ii]
+            pj_n <- pops[jj]
+            ei <- em_loc[[pi_n]]
+            ej <- em_loc[[pj_n]]
+            ni_ri <- max(0L, ei$N - ei$n_null_homo)
+            ni_rj <- max(0L, ej$N - ej$n_null_homo)
+            ni_ci <- max(0L, ei$N - ei$n_absent)
+            ni_cj <- max(0L, ej$N - ej$n_absent)
+            N_r <- ni_ri + ni_rj
+            N2_r <- ni_ri^2 + ni_rj^2
+            N_c <- ni_ci + ni_cj
+            N2_c <- ni_ci^2 + ni_cj^2
+            nc_r <- if (N_r > 0 && ni_ri > 0 && ni_rj > 0) (N_r - N2_r / N_r) else 0.0
+            nc_c <- if (N_c > 0 && ni_ci > 0 && ni_cj > 0) (N_c - N2_c / N_c) else 0.0
+            pi_idx <- which(sapply(pairs, function(p) p[1] == pi_n && p[2] == pj_n))
+            for (a in alleles_obs) {
+              a_chr <- as.character(a)
+              if (nc_r > 0) {
+                pd <- list(
+                  list(ni = ni_ri, nA = (if (a_chr %in% names(ei$genefreq_obs)) ei$genefreq_obs[[a_chr]] else 0.0) * 2L * ni_ri,
+                       AA = if (a_chr %in% names(ei$H_ii)) ei$H_ii[[a_chr]] else 0L, AA_corr = 0.0),
+                  list(ni = ni_rj, nA = (if (a_chr %in% names(ej$genefreq_obs)) ej$genefreq_obs[[a_chr]] else 0.0) * 2L * ni_rj,
+                       AA = if (a_chr %in% names(ej$H_ii)) ej$H_ii[[a_chr]] else 0L, AA_corr = 0.0))
+                cmp <- weir_components_allele(pd, use_corr = FALSE)
+                s12p[ii, jj] <- s12p[ii, jj] + cmp$s2P * nc_r
+                s32p[ii, jj] <- s32p[ii, jj] + (cmp$s2P + cmp$s2I + cmp$s2G) * nc_r
+                if (length(pi_idx) == 1) {
+                  s1_raw_ml[pi_idx, li] <- s1_raw_ml[pi_idx, li] + cmp$s2P * nc_r
+                  s3_raw_ml[pi_idx, li] <- s3_raw_ml[pi_idx, li] + (cmp$s2P + cmp$s2I + cmp$s2G) * nc_r
+                }
+              }
+              if (nc_c > 0) {
+                pf_i <- if (a_chr %in% names(ei$pfreq)) ei$pfreq[[a_chr]] else 0.0
+                pf_j <- if (a_chr %in% names(ej$pfreq)) ej$pfreq[[a_chr]] else 0.0
+                AA_i <- if (a_chr %in% names(ei$H_ii)) ei$H_ii[[a_chr]] else 0L
+                AA_j <- if (a_chr %in% names(ej$H_ii)) ej$H_ii[[a_chr]] else 0L
+                di <- pf_i + 2.0 * ei$rd
+                dj <- pf_j + 2.0 * ej$rd
+                pdc <- list(
+                  list(ni = ni_ci, nA = pf_i * 2L * ni_ci, AA = AA_i, AA_corr = if (AA_i > 0 && di > 0) AA_i * (pf_i / di) else 0.0),
+                  list(ni = ni_cj, nA = pf_j * 2L * ni_cj, AA = AA_j, AA_corr = if (AA_j > 0 && dj > 0) AA_j * (pf_j / dj) else 0.0))
+                cmpc <- weir_components_allele(pdc, use_corr = TRUE)
+                s12pc[ii, jj] <- s12pc[ii, jj] + cmpc$s2P * nc_c
+                s32pc[ii, jj] <- s32pc[ii, jj] + (cmpc$s2P + cmpc$s2I + cmpc$s2G) * nc_c
+                if (length(pi_idx) == 1) {
+                  s1_ena_ml[pi_idx, li] <- s1_ena_ml[pi_idx, li] + cmpc$s2P * nc_c
+                  s3_ena_ml[pi_idx, li] <- s3_ena_ml[pi_idx, li] + (cmpc$s2P + cmpc$s2I + cmpc$s2G) * nc_c
+                }
+              }
+            }
+          }
+        }
+      }
+      mat_raw <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pops, pops))
+      mat_ena <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pops, pops))
+      for (ii in seq_len(n_pops - 1L)) {
+        for (jj in seq(ii + 1L, n_pops)) {
+          mat_raw[jj, ii] <- if (s32p[ii, jj] > 0) s12p[ii, jj] / s32p[ii, jj] else NA_real_
+          mat_ena[jj, ii] <- if (s32pc[ii, jj] > 0) s12pc[ii, jj] / s32pc[ii, jj] else NA_real_
+        }
+      }
+      long_rows <- list()
+      for (ii in seq_len(n_pops - 1L)) {
+        for (jj in seq(ii + 1L, n_pops)) {
+          long_rows[[length(long_rows) + 1L]] <- data.frame(
+            Pop1 = pops[ii], Pop2 = pops[jj],
+            FST_raw = round(mat_raw[jj, ii], 6), FST_ENA = round(mat_ena[jj, ii], 6),
+            Delta_FST = round(mat_ena[jj, ii] - mat_raw[jj, ii], 6), stringsAsFactors = FALSE)
+        }
+      }
+      list(matrix_raw = mat_raw, matrix_ena = mat_ena, long = do.call(rbind, long_rows),
+           s1_raw = s1_raw_ml, s3_raw = s3_raw_ml, s1_ena = s1_ena_ml, s3_ena = s3_ena_ml,
+           pairs = pairs, markers = markers)
+    }
+
+    # Compute pairwise DCSE
+    compute_dc_pairwise <- function(em_res) {
+      markers <- names(em_res)
+      pops <- names(em_res[[markers[1]]])
+      n_pops <- length(pops)
+      if (n_pops < 2L) return(list(matrix_raw = NULL, matrix_ina = NULL, long = data.frame(),
+                                   dc_raw = NULL, dc_ina = NULL, pairs = NULL))
+      pairs <- combn(pops, 2, simplify = FALSE)
+      n_pairs <- length(pairs)
+      dc_sum_raw <- matrix(0.0, n_pops, n_pops, dimnames = list(pops, pops))
+      dc_sum_ina <- matrix(0.0, n_pops, n_pops, dimnames = list(pops, pops))
+      nloc_eff <- matrix(length(markers), n_pops, n_pops, dimnames = list(pops, pops))
+      nloc_eff_c <- matrix(length(markers), n_pops, n_pops, dimnames = list(pops, pops))
+      dc_raw_ml <- matrix(NA_real_, n_pairs, length(markers))
+      dc_ina_ml <- matrix(NA_real_, n_pairs, length(markers))
+
+      for (li in seq_along(markers)) {
+        loc <- markers[li]
+        em_loc <- em_res[[loc]]
+        for (ii in seq_len(n_pops - 1L)) {
+          for (jj in seq(ii + 1L, n_pops)) {
+            ei <- em_loc[[pops[ii]]]
+            ej <- em_loc[[pops[jj]]]
+            ni_ri <- ei$N - ei$n_null_homo
+            ni_rj <- ej$N - ej$n_null_homo
+            ni_ci <- ei$N - ei$n_absent
+            ni_cj <- ej$N - ej$n_absent
+            pi_idx <- which(sapply(pairs, function(p) p[1] == pops[ii] && p[2] == pops[jj]))
+            if (ni_ri > 0L && ni_rj > 0L && length(ei$genefreq_obs) > 0 && length(ej$genefreq_obs) > 0) {
+              d_raw <- cs_distance(ei$genefreq_obs, ej$genefreq_obs)
+              if (!is.na(d_raw)) {
+                dc_sum_raw[jj, ii] <- dc_sum_raw[jj, ii] + d_raw
+                if (length(pi_idx) == 1) dc_raw_ml[pi_idx, li] <- d_raw
+              } else {
+                nloc_eff[jj, ii] <- nloc_eff[jj, ii] - 1L
+              }
+            } else {
+              nloc_eff[jj, ii] <- nloc_eff[jj, ii] - 1L
+            }
+            if (ni_ci > 0L && ni_cj > 0L) {
+              d_ina <- cs_distance(make_ina_freq(ei), make_ina_freq(ej))
+              if (!is.na(d_ina)) {
+                dc_sum_ina[jj, ii] <- dc_sum_ina[jj, ii] + d_ina
+                if (length(pi_idx) == 1) dc_ina_ml[pi_idx, li] <- d_ina
+              } else {
+                nloc_eff_c[jj, ii] <- nloc_eff_c[jj, ii] - 1L
+              }
+            } else {
+              nloc_eff_c[jj, ii] <- nloc_eff_c[jj, ii] - 1L
+            }
+          }
+        }
+      }
+      mat_raw <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pops, pops))
+      mat_ina <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pops, pops))
+      for (ii in seq_len(n_pops - 1L)) {
+        for (jj in seq(ii + 1L, n_pops)) {
+          mat_raw[jj, ii] <- if (nloc_eff[jj, ii] > 0L) dc_sum_raw[jj, ii] / nloc_eff[jj, ii] else NA_real_
+          mat_ina[jj, ii] <- if (nloc_eff_c[jj, ii] > 0L) dc_sum_ina[jj, ii] / nloc_eff_c[jj, ii] else NA_real_
+        }
+      }
+      long_rows <- list()
+      for (ii in seq_len(n_pops - 1L)) {
+        for (jj in seq(ii + 1L, n_pops)) {
+          long_rows[[length(long_rows) + 1L]] <- data.frame(
+            Pop1 = pops[ii], Pop2 = pops[jj],
+            DCSE_raw = round(mat_raw[jj, ii], 6), DCSE_INA = round(mat_ina[jj, ii], 6),
+            Delta_DCSE = round(mat_ina[jj, ii] - mat_raw[jj, ii], 6), stringsAsFactors = FALSE)
+        }
+      }
+      list(matrix_raw = mat_raw, matrix_ina = mat_ina, long = do.call(rbind, long_rows),
+           dc_raw = dc_raw_ml, dc_ina = dc_ina_ml, pairs = pairs, markers = markers)
+    }
+
+    # Compute per locus pair
+    compute_per_locus_pair <- function(em_res) {
+      markers <- names(em_res)
+      pops <- names(em_res[[markers[1]]])
+      rows_fst <- list()
+      rows_dc <- list()
+      for (loc in markers) {
+        em_loc <- em_res[[loc]]
+        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
+        for (ii in seq_len(length(pops) - 1L)) {
+          for (jj in seq(ii + 1L, length(pops))) {
+            pi_n <- pops[ii]
+            pj_n <- pops[jj]
+            ei <- em_loc[[pi_n]]
+            ej <- em_loc[[pj_n]]
+            ni_ri <- max(0L, ei$N - ei$n_null_homo)
+            ni_rj <- max(0L, ej$N - ej$n_null_homo)
+            ni_ci <- max(0L, ei$N - ei$n_absent)
+            ni_cj <- max(0L, ej$N - ej$n_absent)
+            N_r <- ni_ri + ni_rj
+            N_c <- ni_ci + ni_cj
+            nc_r <- if (N_r > 0 && ni_ri > 0 && ni_rj > 0) (N_r - (ni_ri^2 + ni_rj^2) / N_r) else 0.0
+            nc_c <- if (N_c > 0 && ni_ci > 0 && ni_cj > 0) (N_c - (ni_ci^2 + ni_cj^2) / N_c) else 0.0
+            s1_r <- s3_r <- s1_c <- s3_c <- 0.0
+            for (a in alleles_obs) {
+              a_chr <- as.character(a)
+              if (nc_r > 0) {
+                pd <- list(
+                  list(ni = ni_ri, nA = (if (a_chr %in% names(ei$genefreq_obs)) ei$genefreq_obs[[a_chr]] else 0.0) * 2L * ni_ri,
+                       AA = if (a_chr %in% names(ei$H_ii)) ei$H_ii[[a_chr]] else 0L, AA_corr = 0.0),
+                  list(ni = ni_rj, nA = (if (a_chr %in% names(ej$genefreq_obs)) ej$genefreq_obs[[a_chr]] else 0.0) * 2L * ni_rj,
+                       AA = if (a_chr %in% names(ej$H_ii)) ej$H_ii[[a_chr]] else 0L, AA_corr = 0.0))
+                cmp <- weir_components_allele(pd, use_corr = FALSE)
+                s1_r <- s1_r + cmp$s2P * nc_r
+                s3_r <- s3_r + (cmp$s2P + cmp$s2I + cmp$s2G) * nc_r
+              }
+              if (nc_c > 0) {
+                pf_i <- if (a_chr %in% names(ei$pfreq)) ei$pfreq[[a_chr]] else 0.0
+                pf_j <- if (a_chr %in% names(ej$pfreq)) ej$pfreq[[a_chr]] else 0.0
+                AA_i <- if (a_chr %in% names(ei$H_ii)) ei$H_ii[[a_chr]] else 0L
+                AA_j <- if (a_chr %in% names(ej$H_ii)) ej$H_ii[[a_chr]] else 0L
+                di <- pf_i + 2.0 * ei$rd
+                dj <- pf_j + 2.0 * ej$rd
+                pdc <- list(
+                  list(ni = ni_ci, nA = pf_i * 2L * ni_ci, AA = AA_i, AA_corr = if (AA_i > 0 && di > 0) AA_i * (pf_i / di) else 0.0),
+                  list(ni = ni_cj, nA = pf_j * 2L * ni_cj, AA = AA_j, AA_corr = if (AA_j > 0 && dj > 0) AA_j * (pf_j / dj) else 0.0))
+                cmpc <- weir_components_allele(pdc, use_corr = TRUE)
+                s1_c <- s1_c + cmpc$s2P * nc_c
+                s3_c <- s3_c + (cmpc$s2P + cmpc$s2I + cmpc$s2G) * nc_c
+              }
+            }
+            rows_fst[[length(rows_fst) + 1L]] <- data.frame(
+              Locus = loc, Pop1 = pi_n, Pop2 = pj_n,
+              FST_raw = round(if (s3_r != 0) s1_r / s3_r else NA_real_, 6),
+              FST_ENA = round(if (s3_c != 0) s1_c / s3_c else NA_real_, 6),
+              stringsAsFactors = FALSE)
+            d_raw_l <- if (ni_ri > 0 && ni_rj > 0 && length(ei$genefreq_obs) > 0 && length(ej$genefreq_obs) > 0)
+              cs_distance(ei$genefreq_obs, ej$genefreq_obs) else NA_real_
+            d_ina_l <- if (ni_ci > 0 && ni_cj > 0)
+              cs_distance(make_ina_freq(ei), make_ina_freq(ej)) else NA_real_
+            rows_dc[[length(rows_dc) + 1L]] <- data.frame(
+              Locus = loc, Pop1 = pi_n, Pop2 = pj_n,
+              DCSE_raw = round(d_raw_l, 6), DCSE_INA = round(d_ina_l, 6),
+              stringsAsFactors = FALSE)
+          }
+        }
+      }
+      list(fst = do.call(rbind, rows_fst), dc = do.call(rbind, rows_dc))
+    }
 
     # Bootstrap functions
     boot_loci_global_fst <- function(fst_full, nboot, alpha) {
@@ -413,6 +652,101 @@ server_null_alleles <- function(id, rv) {
       fst_ena_b <- ifelse(rowSums(S3c) > 0, rowSums(S1c) / rowSums(S3c), NA_real_)
       list(raw = quantile(fst_raw_b, c(alpha / 2, 0.5, 1 - alpha / 2), na.rm = TRUE),
            ena = quantile(fst_ena_b, c(alpha / 2, 0.5, 1 - alpha / 2), na.rm = TRUE))
+    }
+
+    boot_loci_pair_fst <- function(pair_res, nboot, alpha) {
+      L <- length(pair_res$markers)
+      n_pairs <- length(pair_res$pairs)
+      if (n_pairs == 0 || L == 0) return(NULL)
+      idx <- matrix(sample.int(L, L * nboot, replace = TRUE), nrow = nboot)
+      results <- vector("list", n_pairs)
+      for (pi in seq_len(n_pairs)) {
+        s1r <- pair_res$s1_raw[pi, ]
+        s3r <- pair_res$s3_raw[pi, ]
+        s1e <- pair_res$s1_ena[pi, ]
+        s3e <- pair_res$s3_ena[pi, ]
+        RS1r <- rowSums(matrix(s1r[idx], nrow = nboot))
+        RS3r <- rowSums(matrix(s3r[idx], nrow = nboot))
+        RS1e <- rowSums(matrix(s1e[idx], nrow = nboot))
+        RS3e <- rowSums(matrix(s3e[idx], nrow = nboot))
+        br <- ifelse(RS3r > 0, RS1r / RS3r, NA_real_)
+        be <- ifelse(RS3e > 0, RS1e / RS3e, NA_real_)
+        results[[pi]] <- data.frame(
+          Pop1 = pair_res$pairs[[pi]][1], Pop2 = pair_res$pairs[[pi]][2],
+          FST_ENA_obs = round(if (sum(s3e) > 0) sum(s1e) / sum(s3e) else NA_real_, 6),
+          CI_lo_loci = round(quantile(be, alpha / 2, na.rm = TRUE), 6),
+          Median_loci = round(quantile(be, 0.5, na.rm = TRUE), 6),
+          CI_hi_loci = round(quantile(be, 1 - alpha / 2, na.rm = TRUE), 6),
+          FST_raw_obs = round(if (sum(s3r) > 0) sum(s1r) / sum(s3r) else NA_real_, 6),
+          CI_lo_raw = round(quantile(br, alpha / 2, na.rm = TRUE), 6),
+          CI_hi_raw = round(quantile(br, 1 - alpha / 2, na.rm = TRUE), 6),
+          stringsAsFactors = FALSE)
+      }
+      do.call(rbind, results)
+    }
+
+    boot_loci_pair_dc <- function(dc_res, nboot, alpha) {
+      L <- length(dc_res$markers)
+      n_pairs <- length(dc_res$pairs)
+      if (n_pairs == 0 || L == 0) return(NULL)
+      idx <- matrix(sample.int(L, L * nboot, replace = TRUE), nrow = nboot)
+      results <- vector("list", n_pairs)
+      for (pi in seq_len(n_pairs)) {
+        dr <- dc_res$dc_raw[pi, ]
+        di <- dc_res$dc_ina[pi, ]
+        br <- rowMeans(matrix(dr[idx], nrow = nboot), na.rm = TRUE)
+        bi <- rowMeans(matrix(di[idx], nrow = nboot), na.rm = TRUE)
+        results[[pi]] <- data.frame(
+          Pop1 = dc_res$pairs[[pi]][1], Pop2 = dc_res$pairs[[pi]][2],
+          DCSE_INA_obs = round(mean(di, na.rm = TRUE), 6),
+          CI_lo_loci = round(quantile(bi, alpha / 2, na.rm = TRUE), 6),
+          Median_loci = round(quantile(bi, 0.5, na.rm = TRUE), 6),
+          CI_hi_loci = round(quantile(bi, 1 - alpha / 2, na.rm = TRUE), 6),
+          DCSE_raw_obs = round(mean(dr, na.rm = TRUE), 6),
+          CI_lo_raw = round(quantile(br, alpha / 2, na.rm = TRUE), 6),
+          CI_hi_raw = round(quantile(br, 1 - alpha / 2, na.rm = TRUE), 6),
+          stringsAsFactors = FALSE)
+      }
+      do.call(rbind, results)
+    }
+
+    boot_subsamples_global_fst <- function(raw_df, em_res, base, treatments, nboot, alpha) {
+      markers <- names(em_res)
+      pops <- names(em_res[[markers[1]]])
+      idx_by_pop_loc <- list()
+      for (pop in pops) {
+        for (loc in markers) {
+          idx_by_pop_loc[[paste0(pop, "___", loc)]] <- which(raw_df$Population == pop & raw_df$Marker == loc)
+        }
+      }
+      inds_by_pop <- lapply(pops, function(p) unique(raw_df$Individual[raw_df$Population == p]))
+      names(inds_by_pop) <- pops
+      boot_raw <- boot_ena <- numeric(nboot)
+      for (b in seq_len(nboot)) {
+        em_b <- list()
+        for (loc in markers) {
+          em_b[[loc]] <- list()
+          treat <- as.character(treatments[loc] %||% "absent")
+          for (pop in pops) {
+            inds <- inds_by_pop[[pop]]
+            if (length(inds) == 0L) {
+              em_b[[loc]][[pop]] <- em_res[[loc]][[pop]]
+              next
+            }
+            ri <- sample(inds, length(inds), replace = TRUE)
+            br <- idx_by_pop_loc[[paste0(pop, "___", loc)]]
+            ic <- raw_df$Individual[br]
+            ir <- unlist(lapply(ri, function(x) br[ic == x]))
+            gts <- raw_df$gt[ir]
+            em_b[[loc]][[pop]] <- if (length(gts) == 0L) em_res[[loc]][[pop]] else em_freena(gts, base, treat)
+          }
+        }
+        fg <- compute_fst_global_full(em_b)
+        boot_raw[b] <- fg$global_raw %||% NA_real_
+        boot_ena[b] <- fg$global_ena %||% NA_real_
+      }
+      list(raw = quantile(boot_raw, c(alpha / 2, 0.5, 1 - alpha / 2), na.rm = TRUE),
+           ena = quantile(boot_ena, c(alpha / 2, 0.5, 1 - alpha / 2), na.rm = TRUE))
     }
 
     # Main reactive
@@ -437,13 +771,13 @@ server_null_alleles <- function(id, rv) {
           treat <- as.character(treats[loc] %||% "absent")
           for (pop in pops) {
             gts <- raw_df$gt[raw_df$Marker == loc & raw_df$Population == pop]
-            em_res[[loc]][[pop]] <- if (length(gts) == 0L) {
-              list(rd = 0.0, pfreq = numeric(0), genefreq_obs = numeric(0),
-                   H_ii = numeric(0), H_iX = numeric(0), N = 0L, N_valid = 0L,
-                   efpop = 0L, n_absent = 0L, n_null_homo = 0L,
-                   alleles = character(0), n_valid_geno = 0L)
+            if (length(gts) == 0L) {
+              em_res[[loc]][[pop]] <- list(rd = 0.0, pfreq = numeric(0), genefreq_obs = numeric(0),
+                                           H_ii = numeric(0), H_iX = numeric(0), N = 0L, N_valid = 0L,
+                                           efpop = 0L, n_absent = 0L, n_null_homo = 0L,
+                                           alleles = character(0), n_valid_geno = 0L)
             } else {
-              em_freena(gts, base, treat)
+              em_res[[loc]][[pop]] <- em_freena(gts, base, treat)
             }
           }
         }
@@ -451,12 +785,30 @@ server_null_alleles <- function(id, rv) {
         setProgress(0.15, detail = "Computing FST...")
         fst_global <- compute_fst_global_full(em_res)
 
-        setProgress(0.50, detail = sprintf("Bootstrap (%d reps)...", nboot))
+        setProgress(0.25, detail = "Computing pairwise FST...")
+        fst_pair <- compute_fst_pairwise(em_res)
+
+        setProgress(0.35, detail = "Computing DCSE...")
+        dc_pair <- compute_dc_pairwise(em_res)
+
+        setProgress(0.45, detail = "Computing per-locus pairs...")
+        per_locus_pair <- compute_per_locus_pair(em_res)
+
+        setProgress(0.50, detail = sprintf("Bootstrap loci global FST (%d reps)...", nboot))
         boot_gl_loci <- boot_loci_global_fst(fst_global, nboot, alpha)
+
+        setProgress(0.60, detail = sprintf("Bootstrap loci pairwise FST (%d reps)...", nboot))
+        boot_pair_fst_loci <- boot_loci_pair_fst(fst_pair, nboot, alpha)
+
+        setProgress(0.70, detail = sprintf("Bootstrap loci pairwise DCSE (%d reps)...", nboot))
+        boot_pair_dc_loci <- boot_loci_pair_dc(dc_pair, nboot, alpha)
+
+        setProgress(0.78, detail = sprintf("Bootstrap subsamples global FST (%d reps)...", nboot))
+        boot_gl_subs <- boot_subsamples_global_fst(raw_df, em_res, base, treats, nboot, alpha)
 
         setProgress(0.95, detail = "Assembling results...")
 
-        # Table 1 with all columns
+        # Table 1
         t1_rows <- list()
         for (loc in markers) {
           for (pop in pops) {
@@ -473,11 +825,8 @@ server_null_alleles <- function(id, rv) {
             t1_rows[[length(t1_rows) + 1L]] <- data.frame(
               Locus = loc, Population = pop, Coding = as.character(treats[loc] %||% "absent"),
               p_nulls = round(p_nulls_val, 6), N = n_val,
-              N_exp_blanks = round(n_exp_val, 6),
-              p_nulls_x_N = round(p_nulls_N_val, 6),
-              N_blanks_obs = n_blanks_obs,
-              stringsAsFactors = FALSE
-            )
+              N_exp_blanks = round(n_exp_val, 6), p_nulls_x_N = round(p_nulls_N_val, 6),
+              N_blanks_obs = n_blanks_obs, stringsAsFactors = FALSE)
           }
         }
         t1 <- do.call(rbind, t1_rows)
@@ -485,7 +834,7 @@ server_null_alleles <- function(id, rv) {
         t1 <- t1[order(t1$Locus, t1$Population), ]
         t1$Locus <- as.character(t1$Locus)
 
-        # Table 2 with all columns
+        # Table 2
         t2_rows <- lapply(markers, function(loc) {
           sub <- t1[t1$Locus == loc, , drop = FALSE]
           valid <- !is.na(sub$p_nulls) & sub$N > 0
@@ -507,19 +856,19 @@ server_null_alleles <- function(id, rv) {
             Av_p_nulls = round(av_p, 6),
             Av_N_exp_blanks = round(mean(sub$N_exp_blanks[valid], na.rm = TRUE), 6),
             N_tot = N_tot, N_blanks_obs = N_blanks_obs,
-            N_blanks_exp = round(N_blanks_exp, 6),
-            f_expBlanks = round(f_expBlanks, 6),
-            p_value = 1, p_nulls = round(av_p, 6),
-            stringsAsFactors = FALSE
-          )
+            N_blanks_exp = round(N_blanks_exp, 6), f_expBlanks = round(f_expBlanks, 6),
+            p_value = 1, p_nulls = round(av_p, 6), stringsAsFactors = FALSE)
         })
         t2 <- do.call(rbind, t2_rows)
 
         setProgress(1)
 
-        list(t1 = t1, t2 = t2, fst_global = fst_global,
-             boot_gl_loci = boot_gl_loci, nboot = nboot, alpha = alpha,
-             treats = treats, markers = markers, pops = pops, em_res = em_res)
+        list(t1 = t1, t2 = t2, fst_global = fst_global, fst_pair = fst_pair,
+             dc_pair = dc_pair, per_locus_pair = per_locus_pair,
+             boot_gl_loci = boot_gl_loci, boot_gl_subs = boot_gl_subs,
+             boot_pair_fst = boot_pair_fst_loci, boot_pair_dc = boot_pair_dc_loci,
+             nboot = nboot, alpha = alpha, treats = treats, markers = markers,
+             pops = pops, em_res = em_res)
       })
     })
 
@@ -545,12 +894,31 @@ server_null_alleles <- function(id, rv) {
       write.table(df, file = file, sep = sep, row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
     }
 
+    half_matrix_txt <- function(df, stat_col, pops, loc) {
+      sub <- df[df$Locus == loc, , drop = FALSE]
+      n <- length(pops)
+      lines <- c(paste0("# Locus: ", loc, "  Statistic: ", stat_col))
+      hdr <- paste(c("", pops[-n]), collapse = "\t")
+      lines <- c(lines, hdr)
+      for (i in seq(2, n)) {
+        row_vals <- sapply(seq_len(n), function(j) {
+          if (j >= i) return("")
+          row <- sub[sub$Pop1 == pops[j] & sub$Pop2 == pops[i], , drop = FALSE]
+          if (nrow(row) == 0) return("NA")
+          v <- row[[stat_col]][1]
+          if (is.na(v)) "NA" else as.character(round(v, 6))
+        })
+        lines <- c(lines, paste(c(pops[i], row_vals[-n]), collapse = "\t"))
+      }
+      lines
+    }
+
     # File 1 downloads
     output$dl_file1_csv <- downloadHandler(
       filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".csv"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 1 — Null allele frequencies")
+        hdr <- meta_header(r, "File 1 — Null allele frequencies per locus x population")
         hdr <- c(hdr, "# p_nulls per locus × population (EM algorithm)", "#")
         t1_exp <- r$t1[, c("Locus", "Population", "p_nulls", "N", "N_exp_blanks", "p_nulls_x_N")]
         names(t1_exp) <- c("Locus", "Population", "p_nulls", "N", "N_exp_blanks", "p_nulls*N")
@@ -567,7 +935,7 @@ server_null_alleles <- function(id, rv) {
       filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".txt"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 1 — Null allele frequencies")
+        hdr <- meta_header(r, "File 1 — Null allele frequencies per locus x population")
         hdr <- c(hdr, "# p_nulls per locus × population (EM algorithm)", "#")
         t1_exp <- r$t1[, c("Locus", "Population", "p_nulls", "N", "N_exp_blanks", "p_nulls_x_N")]
         names(t1_exp) <- c("Locus", "Population", "p_nulls", "N", "N_exp_blanks", "p_nulls*N")
@@ -580,60 +948,131 @@ server_null_alleles <- function(id, rv) {
       }
     )
 
-    # File 2, 3, 4 download handlers (simplified - similar pattern)
+    # File 2 downloads
     output$dl_file2_csv <- downloadHandler(
-      filename = function() paste0("global_FST_ENA_", Sys.Date(), ".csv"),
+      filename = function() paste0("global_FST_ENA_CI_", Sys.Date(), ".csv"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 2 — Global FST and FST-ENA")
-        glob <- data.frame(Locus = "GLOBAL", FST_raw = round(r$fst_global$global_raw, 6),
-                           FST_ENA = round(r$fst_global$global_ena, 6),
-                           CI_lo = round(r$boot_gl_loci$ena[1], 6),
-                           CI_hi = round(r$boot_gl_loci$ena[3], 6))
-        write_with_header(hdr, glob, file, sep = ",")
+        pl <- r$fst_global$per_locus
+        glob <- data.frame(Locus = "GLOBAL_MULTILOCUS",
+          FST_raw = round(r$fst_global$global_raw, 6),
+          FST_ENA = round(r$fst_global$global_ena, 6),
+          Delta_FST = round(r$fst_global$global_ena - r$fst_global$global_raw, 6),
+          CI_lo_raw_loci = round(r$boot_gl_loci$raw[1], 6),
+          CI_hi_raw_loci = round(r$boot_gl_loci$raw[3], 6),
+          CI_lo_ENA_loci = round(r$boot_gl_loci$ena[1], 6),
+          CI_hi_ENA_loci = round(r$boot_gl_loci$ena[3], 6),
+          CI_lo_raw_subs = round(r$boot_gl_subs$raw[1], 6),
+          CI_hi_raw_subs = round(r$boot_gl_subs$raw[3], 6),
+          CI_lo_ENA_subs = round(r$boot_gl_subs$ena[1], 6),
+          CI_hi_ENA_subs = round(r$boot_gl_subs$ena[3], 6),
+          N_pops_raw = NA_integer_, N_pops_ENA = NA_integer_, stringsAsFactors = FALSE)
+        pl$CI_lo_raw_loci <- NA_real_
+        pl$CI_hi_raw_loci <- NA_real_
+        pl$CI_lo_ENA_loci <- NA_real_
+        pl$CI_hi_ENA_loci <- NA_real_
+        pl$CI_lo_raw_subs <- NA_real_
+        pl$CI_hi_raw_subs <- NA_real_
+        pl$CI_lo_ENA_subs <- NA_real_
+        pl$CI_hi_ENA_subs <- NA_real_
+        out <- rbind(glob[, names(pl)], pl)
+        hdr <- meta_header(r, "File 2 — Global FST and FST-ENA with bootstrap CIs")
+        write_with_header(hdr, out, file, sep = ",")
       }
     )
 
     output$dl_file2_txt <- downloadHandler(
-      filename = function() paste0("global_FST_ENA_", Sys.Date(), ".txt"),
+      filename = function() paste0("global_FST_ENA_CI_", Sys.Date(), ".txt"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 2 — Global FST and FST-ENA")
-        glob <- data.frame(Locus = "GLOBAL", FST_raw = round(r$fst_global$global_raw, 6),
-                           FST_ENA = round(r$fst_global$global_ena, 6),
-                           CI_lo = round(r$boot_gl_loci$ena[1], 6),
-                           CI_hi = round(r$boot_gl_loci$ena[3], 6))
-        write_with_header(hdr, glob, file, sep = "\t")
+        pl <- r$fst_global$per_locus
+        glob <- data.frame(Locus = "GLOBAL_MULTILOCUS",
+          FST_raw = round(r$fst_global$global_raw, 6),
+          FST_ENA = round(r$fst_global$global_ena, 6),
+          Delta_FST = round(r$fst_global$global_ena - r$fst_global$global_raw, 6),
+          CI_lo_raw_loci = round(r$boot_gl_loci$raw[1], 6),
+          CI_hi_raw_loci = round(r$boot_gl_loci$raw[3], 6),
+          CI_lo_ENA_loci = round(r$boot_gl_loci$ena[1], 6),
+          CI_hi_ENA_loci = round(r$boot_gl_loci$ena[3], 6),
+          CI_lo_raw_subs = round(r$boot_gl_subs$raw[1], 6),
+          CI_hi_raw_subs = round(r$boot_gl_subs$raw[3], 6),
+          CI_lo_ENA_subs = round(r$boot_gl_subs$ena[1], 6),
+          CI_hi_ENA_subs = round(r$boot_gl_subs$ena[3], 6),
+          N_pops_raw = NA_integer_, N_pops_ENA = NA_integer_, stringsAsFactors = FALSE)
+        pl$CI_lo_raw_loci <- NA_real_
+        pl$CI_hi_raw_loci <- NA_real_
+        pl$CI_lo_ENA_loci <- NA_real_
+        pl$CI_hi_ENA_loci <- NA_real_
+        pl$CI_lo_raw_subs <- NA_real_
+        pl$CI_hi_raw_subs <- NA_real_
+        pl$CI_lo_ENA_subs <- NA_real_
+        pl$CI_hi_ENA_subs <- NA_real_
+        out <- rbind(glob[, names(pl)], pl)
+        hdr <- meta_header(r, "File 2 — Global FST and FST-ENA with bootstrap CIs")
+        write_with_header(hdr, out, file, sep = "\t")
       }
     )
 
+    # File 3 downloads
     output$dl_file3_csv <- downloadHandler(
-      filename = function() paste0("pairwise_stats_", Sys.Date(), ".csv"),
+      filename = function() paste0("pairwise_long_format_", Sys.Date(), ".csv"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 3 — Pairwise statistics")
-        dummy <- data.frame(Pop1 = "A", Pop2 = "B", FST = 0)
-        write_with_header(hdr, dummy, file, sep = ",")
+        fst_l <- r$fst_pair$long
+        dc_l <- r$dc_pair$long
+        merged <- merge(fst_l, dc_l, by = c("Pop1", "Pop2"), all = TRUE)
+        if (!is.null(r$boot_pair_fst) && nrow(r$boot_pair_fst) > 0) {
+          merged <- merge(merged, r$boot_pair_fst[, c("Pop1", "Pop2", "CI_lo_loci", "CI_hi_loci", "CI_lo_raw", "CI_hi_raw")],
+                          by = c("Pop1", "Pop2"), all.x = TRUE, suffixes = c("", "_FST_loci"))
+        }
+        if (!is.null(r$boot_pair_dc) && nrow(r$boot_pair_dc) > 0) {
+          merged <- merge(merged, r$boot_pair_dc[, c("Pop1", "Pop2", "CI_lo_loci", "CI_hi_loci", "CI_lo_raw", "CI_hi_raw")],
+                          by = c("Pop1", "Pop2"), all.x = TRUE, suffixes = c("_FST", "_DCSE"))
+        }
+        hdr <- meta_header(r, "File 3 — Pairwise statistics (all loci combined), long format")
+        write_with_header(hdr, merged, file, sep = ",")
       }
     )
 
     output$dl_file3_txt <- downloadHandler(
-      filename = function() paste0("pairwise_stats_", Sys.Date(), ".txt"),
+      filename = function() paste0("pairwise_long_format_", Sys.Date(), ".txt"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 3 — Pairwise statistics")
-        dummy <- data.frame(Pop1 = "A", Pop2 = "B", FST = 0)
-        write_with_header(hdr, dummy, file, sep = "\t")
+        fst_l <- r$fst_pair$long
+        dc_l <- r$dc_pair$long
+        merged <- merge(fst_l, dc_l, by = c("Pop1", "Pop2"), all = TRUE)
+        if (!is.null(r$boot_pair_fst) && nrow(r$boot_pair_fst) > 0) {
+          merged <- merge(merged, r$boot_pair_fst[, c("Pop1", "Pop2", "CI_lo_loci", "CI_hi_loci", "CI_lo_raw", "CI_hi_raw")],
+                          by = c("Pop1", "Pop2"), all.x = TRUE, suffixes = c("", "_FST_loci"))
+        }
+        if (!is.null(r$boot_pair_dc) && nrow(r$boot_pair_dc) > 0) {
+          merged <- merge(merged, r$boot_pair_dc[, c("Pop1", "Pop2", "CI_lo_loci", "CI_hi_loci", "CI_lo_raw", "CI_hi_raw")],
+                          by = c("Pop1", "Pop2"), all.x = TRUE, suffixes = c("_FST", "_DCSE"))
+        }
+        hdr <- meta_header(r, "File 3 — Pairwise statistics (all loci combined), long format")
+        write_with_header(hdr, merged, file, sep = "\t")
       }
     )
 
+    # File 4 downloads
     output$dl_file4 <- downloadHandler(
-      filename = function() paste0("per_locus_matrices_", Sys.Date(), ".txt"),
+      filename = function() paste0("per_locus_half_matrices_", Sys.Date(), ".txt"),
       content = function(file) {
         r <- results_r()
-        hdr <- meta_header(r, "File 4 — Per-locus half-matrices")
+        hdr <- meta_header(r, "File 4 — Per-locus half-matrices (FST, FST-ENA, DCSE, DCSE-INA)")
         writeLines(hdr, con = file)
-        write("FST matrices would appear here", file = file, append = TRUE)
+        for (loc in r$markers) {
+          for (sc in c("FST_raw", "FST_ENA")) {
+            ln <- half_matrix_txt(r$per_locus_pair$fst, sc, r$pops, loc)
+            write(ln, file = file, append = TRUE)
+            write("", file = file, append = TRUE)
+          }
+          for (sc in c("DCSE_raw", "DCSE_INA")) {
+            ln <- half_matrix_txt(r$per_locus_pair$dc, sc, r$pops, loc)
+            write(ln, file = file, append = TRUE)
+            write("", file = file, append = TRUE)
+          }
+        }
       }
     )
 
@@ -665,6 +1104,7 @@ server_null_alleles <- function(id, rv) {
         downloadButton(ns("dl_file4"), ".txt", class = "btn btn-default btn-xs"))
     })
 
+    # Run status
     output$ui_run_status <- renderUI({
       r <- tryCatch(results_r(), error = function(e) NULL)
       if (is.null(r)) return(NULL)
@@ -720,8 +1160,7 @@ server_null_alleles <- function(id, rv) {
       names(d) <- c("Locus", "Population", "p_nulls", "N", "N_exp_blanks", "p_nulls*N")
       DT::datatable(d, rownames = FALSE, options = list(pageLength = 20, scrollX = TRUE, dom = "lftip"),
         class = "compact hover stripe") |>
-        DT::formatRound("p_nulls", 6) |> DT::formatRound("N_exp_blanks", 6) |>
-        DT::formatRound("p_nulls*N", 6)
+        DT::formatRound("p_nulls", 6) |> DT::formatRound("N_exp_blanks", 6) |> DT::formatRound("p_nulls*N", 6)
     }, server = TRUE)
 
     output$dt_t2 <- DT::renderDT({
@@ -748,28 +1187,165 @@ server_null_alleles <- function(id, rv) {
         DT::formatRound("Raw FST", 6) |> DT::formatRound("FST-ENA", 6) |> DT::formatRound("\u0394FST", 6)
     }, server = TRUE)
 
+    # Matrix display helpers
+    render_mat_html <- function(mat, fmt = 6, thr = c(0.05, 0.15, 0.25),
+                                clrs = c("#f0fdf4", "#dcfce7", "#fefce8", "#fef2f2")) {
+      if (is.null(mat)) return(HTML("<p>No data available</p>"))
+      pops <- rownames(mat)
+      n <- length(pops)
+      if (n == 0) return(HTML("<p>No populations</p>"))
+      cell <- function(i, j) {
+        if (i == j) return('<td class="diag">\u2014</td>')
+        if (i < j) return('<td class="upper">\u00b7</td>')
+        v <- mat[i, j]
+        if (is.na(v)) return('<td style="color:#94a3b8;">NA</td>')
+        bg <- clrs[findInterval(v, thr) + 1L]
+        sprintf('<td style="background:%s;">%s</td>', bg, round(v, fmt))
+      }
+      thead <- paste0('<tr><th></th>', paste(sprintf('<th>%s</th>', pops[-n]), collapse = ""), '</tr>')
+      tbody <- paste(sapply(seq_len(n), function(i) {
+        if (i == 1L) return("")
+        paste0('<tr><td class="lbl">', pops[i], '</td>',
+               paste(sapply(seq_len(n), function(j) cell(i, j)), collapse = ""), '</tr>')
+      }), collapse = "")
+      HTML(sprintf('<div class="na-matrix-wrap"><table class="na-matrix"><thead>%s</thead><tbody>%s</tbody></table></div>', thead, tbody))
+    }
+
+    boot_tbl <- function(d, cols, col_labels, char_cols = c("Pop1", "Pop2", "Locus")) {
+      if (is.null(d) || nrow(d) == 0) return(HTML("<p>No bootstrap data available</p>"))
+      rows_html <- sapply(seq_len(nrow(d)), function(i) {
+        cells <- paste(sapply(cols, function(cn) {
+          val <- d[[cn]][i]
+          if (cn %in% char_cols) {
+            sprintf('<td class="lbl">%s</td>', htmltools::htmlEscape(as.character(val)))
+          } else {
+            num <- suppressWarnings(as.numeric(val))
+            sprintf('<td>%s</td>', if (is.na(num)) "NA" else formatC(num, digits = 6, format = "f"))
+          }
+        }), collapse = "")
+        paste0("<tr>", cells, "</tr>")
+      })
+      HTML(paste0('<table class="na-matrix" style="width:100%"><thead><tr>',
+        paste(sprintf("<th>%s</th>", col_labels), collapse = ""),
+        '</tr></thead><tbody>', paste(rows_html, collapse = ""), '</tbody></table>'))
+    }
+
+    # UI outputs
     output$ui_boot_global_fst <- renderUI({
       r <- tryCatch(results_r(), error = function(e) NULL)
       if (is.null(r)) return(tags$p("Run computation first.", style = "color:#94a3b8;"))
       ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
       bl <- r$boot_gl_loci
+      bs <- r$boot_gl_subs
       tags$div(class = "na-boot-result",
         tags$strong(sprintf("Global FST-ENA \u2014 observed: %.6f", r$fst_global$global_ena)),
         tags$br(),
         sprintf("%s CI (bootstrap over loci): [ %.6f \u2013 %.6f ]", ci_pct, bl$ena[1], bl$ena[3]),
         tags$br(),
+        sprintf("%s CI (bootstrap over sub-samples): [ %.6f \u2013 %.6f ]", ci_pct, bs$ena[1], bs$ena[3]),
+        tags$br(), tags$br(),
         tags$strong(sprintf("Global Raw FST \u2014 observed: %.6f", r$fst_global$global_raw)),
         tags$br(),
-        sprintf("%s CI (bootstrap over loci): [ %.6f \u2013 %.6f ]", ci_pct, bl$raw[1], bl$raw[3]))
+        sprintf("%s CI (bootstrap over loci): [ %.6f \u2013 %.6f ]", ci_pct, bl$raw[1], bl$raw[3]),
+        tags$br(),
+        sprintf("%s CI (bootstrap over sub-samples): [ %.6f \u2013 %.6f ]", ci_pct, bs$raw[1], bs$raw[3]))
     })
 
-    # Placeholder for other outputs
-    output$ui_fst_pair_matrix <- renderUI({ tags$p("FST pairwise matrix would appear here") })
-    output$ui_boot_pair_fst <- renderUI({ tags$p("Bootstrap pairwise FST would appear here") })
-    output$ui_dc_matrix <- renderUI({ tags$p("DCSE matrix would appear here") })
-    output$ui_boot_pair_dc <- renderUI({ tags$p("Bootstrap DCSE would appear here") })
-    output$dt_fst_locus <- DT::renderDT({ DT::datatable(data.frame(Message = "Run computation first")) })
-    output$dt_dc_locus <- DT::renderDT({ DT::datatable(data.frame(Message = "Run computation first")) })
+    output$ui_fst_pair_matrix <- renderUI({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      if (is.null(r) || is.null(r$fst_pair$matrix_raw))
+        return(tags$p("Run computation first.", style = "color:#94a3b8;"))
+      typ <- input$fst_pair_display %||% "both"
+      if (typ == "both") {
+        tags$div(tags$p(tags$strong("Raw FST")), render_mat_html(r$fst_pair$matrix_raw), tags$br(),
+                 tags$p(tags$strong("FST-ENA")), render_mat_html(r$fst_pair$matrix_ena))
+      } else if (typ == "raw") {
+        render_mat_html(r$fst_pair$matrix_raw)
+      } else {
+        render_mat_html(r$fst_pair$matrix_ena)
+      }
+    })
+
+    output$ui_boot_pair_fst <- renderUI({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      if (is.null(r) || is.null(r$boot_pair_fst))
+        return(tags$p("Run computation first.", style = "color:#94a3b8;"))
+      ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
+      tags$div(class = "na-boot-result",
+        tags$p(tags$strong(sprintf("Pairwise FST-ENA \u2014 %s CI (bootstrap over loci)", ci_pct))),
+        tags$div(class = "na-matrix-wrap",
+          boot_tbl(r$boot_pair_fst,
+            c("Pop1", "Pop2", "FST_ENA_obs", "CI_lo_loci", "Median_loci", "CI_hi_loci",
+              "FST_raw_obs", "CI_lo_raw", "CI_hi_raw"),
+            c("Pop 1", "Pop 2", "FST-ENA obs.", "CI lo", "Median", "CI hi",
+              "Raw FST obs.", "CI lo (raw)", "CI hi (raw)"))))
+    })
+
+    output$ui_dc_matrix <- renderUI({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      if (is.null(r) || is.null(r$dc_pair$matrix_raw))
+        return(tags$p("Run computation first.", style = "color:#94a3b8;"))
+      typ <- input$dc_display %||% "both"
+      thr <- c(0.1, 0.25, 0.4)
+      clrs <- c("#eff6ff", "#dbeafe", "#fef9c3", "#fef2f2")
+      if (typ == "both") {
+        tags$div(tags$p(tags$strong("Raw DCSE")), render_mat_html(r$dc_pair$matrix_raw, thr = thr, clrs = clrs), tags$br(),
+                 tags$p(tags$strong("DCSE-INA")), render_mat_html(r$dc_pair$matrix_ina, thr = thr, clrs = clrs))
+      } else if (typ == "raw") {
+        render_mat_html(r$dc_pair$matrix_raw, thr = thr, clrs = clrs)
+      } else {
+        render_mat_html(r$dc_pair$matrix_ina, thr = thr, clrs = clrs)
+      }
+    })
+
+    output$ui_boot_pair_dc <- renderUI({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      if (is.null(r) || is.null(r$boot_pair_dc))
+        return(tags$p("Run computation first.", style = "color:#94a3b8;"))
+      ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
+      tags$div(class = "na-boot-result",
+        tags$p(tags$strong(sprintf("Pairwise DCSE-INA \u2014 %s CI (bootstrap over loci)", ci_pct))),
+        tags$div(class = "na-matrix-wrap",
+          boot_tbl(r$boot_pair_dc,
+            c("Pop1", "Pop2", "DCSE_INA_obs", "CI_lo_loci", "Median_loci", "CI_hi_loci",
+              "DCSE_raw_obs", "CI_lo_raw", "CI_hi_raw"),
+            c("Pop 1", "Pop 2", "DCSE-INA obs.", "CI lo", "Median", "CI hi",
+              "Raw DCSE obs.", "CI lo (raw)", "CI hi (raw)"))))
+    })
+
+    output$dt_fst_locus <- DT::renderDT({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      shiny::validate(shiny::need(!is.null(r), "Run computation first."))
+      d <- r$per_locus_pair$fst
+      sl <- safe_choice(input$fl_locus, "all")
+      sp1 <- safe_choice(input$fl_pop1, "all")
+      sp2 <- safe_choice(input$fl_pop2, "all")
+      if (sl != "all") d <- d[d$Locus == sl, , drop = FALSE]
+      if (sp1 != "all") d <- d[d$Pop1 == sp1 | d$Pop2 == sp1, , drop = FALSE]
+      if (sp2 != "all") d <- d[d$Pop2 == sp2 | d$Pop1 == sp2, , drop = FALSE]
+      shiny::validate(shiny::need(nrow(d) > 0, "No data for selected filters."))
+      names(d) <- c("Locus", "Pop 1", "Pop 2", "Raw FST", "FST-ENA")
+      DT::datatable(d, rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE, dom = "lftip"),
+        class = "compact hover stripe") |>
+        DT::formatRound("Raw FST", 6) |> DT::formatRound("FST-ENA", 6)
+    }, server = TRUE)
+
+    output$dt_dc_locus <- DT::renderDT({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      shiny::validate(shiny::need(!is.null(r), "Run computation first."))
+      d <- r$per_locus_pair$dc
+      sl <- safe_choice(input$fl_locus, "all")
+      sp1 <- safe_choice(input$fl_pop1, "all")
+      sp2 <- safe_choice(input$fl_pop2, "all")
+      if (sl != "all") d <- d[d$Locus == sl, , drop = FALSE]
+      if (sp1 != "all") d <- d[d$Pop1 == sp1 | d$Pop2 == sp1, , drop = FALSE]
+      if (sp2 != "all") d <- d[d$Pop2 == sp2 | d$Pop1 == sp2, , drop = FALSE]
+      shiny::validate(shiny::need(nrow(d) > 0, "No data for selected filters."))
+      names(d) <- c("Locus", "Pop 1", "Pop 2", "Raw DCSE", "DCSE-INA")
+      DT::datatable(d, rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE, dom = "lftip"),
+        class = "compact hover stripe") |>
+        DT::formatRound("Raw DCSE", 6) |> DT::formatRound("DCSE-INA", 6)
+    }, server = TRUE)
 
   })
 }
