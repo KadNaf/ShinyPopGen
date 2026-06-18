@@ -1,8 +1,6 @@
 # ui_isolation_by_distance.R
 # Tab: Isolation by Distance
-# Rousset (1997) linearised FST/(1-FST) vs geographic distance, Mantel test.
-# Three regression lines: average, upper 95% CI, lower 95% CI.
-# Two tabs: IBD Analysis and Bootstrap Confidence Intervals
+# Two tabs: Pairwise Genetic Distances + Mantel Test
 
 isolation_by_distance_UI <- function(id) {
   ns <- NS(id)
@@ -13,7 +11,7 @@ isolation_by_distance_UI <- function(id) {
     module_banner(
       "map-marker-alt",
       "Isolation by Distance",
-      "Rousset (1997) linearisation \u00b7 FST\u2044(1\u2212FST) vs geographic distance \u00b7 Mantel test",
+      "Pairwise genetic distances · Bootstrap CI · Mantel test",
       "#2CBF9F"
     ),
 
@@ -31,92 +29,166 @@ isolation_by_distance_UI <- function(id) {
       )
     ),
 
-    tags$div(
-      class = "spg-method-note", style = "border-left-color:#2CBF9F;",
-      HTML(paste0(
-        "Tests whether genetic differentiation increases with geographic distance (IBD). ",
-        "Pairwise F<sub>ST</sub> (WC84) is linearised as F<sub>ST</sub>\u2044(1\u2212F<sub>ST</sub>) ",
-        "and regressed against geographic distance (1D) or ln(distance) (2D \u2014 Rousset 1997). ",
-        "Three regression lines are fitted: through the mean (Average), ",
-        "the upper 95% CI bound (ls) and the lower 95% CI bound (li). ",
-        "The slope <b>b</b> estimates 1/N<sub>b</sub> (neighbourhood size). ",
-        "Significance is assessed with a Mantel permutation test. ",
-        "<b>Requires latitude/longitude columns set during data import.</b><br><br>",
-        "<b>References:</b> Rousset F. 1997. <em>Genetics</em> 145:1219\u20131228. ",
-        "| de Mee\u00fbs T <em>et al.</em> 2006. <em>Infect Genet Evol</em>."
-      ))
-    ),
-
-    # ── Tabs ──────────────────────────────────────────────────────────────────
     tabsetPanel(
-      id = ns("ibd_tabs"),
+      id = ns("main_tabs"),
       type = "tabs",
 
-      # ── Tab 1: IBD Analysis ──────────────────────────────────────────────
+      # ── TAB 1: Pairwise Genetic Distances ─────────────────────────────────
       tabPanel(
-        "IBD Analysis",
-        icon = icon("chart-line"),
+        title = "Pairwise Distances",
+        icon = icon("project-diagram"),
+        tags$div(
+          class = "spg-method-note", style = "border-left-color:#2CBF9F;",
+          HTML(paste0(
+            "Computes pairwise genetic distances (Cavalli-Sforza & Edwards 1967) ",
+            "and F<sub>ST</sub> (Weir & Cockerham 1984) between all population pairs. ",
+            "Bootstrap resampling over <b>loci</b> provides 95% confidence intervals. ",
+            "Both uncorrected and ENA-corrected (Chapuis & Estoup 2007) estimates are computed. ",
+            "<b>Requires genotype data imported with population assignments.</b>"
+          ))
+        ),
 
-        # ── Configuration ─────────────────────────────────────────────────
+        # Configuration
         fluidRow(
           box(
             width = 12,
             title = div(
               style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("sliders-h"), " IBD parameters"
+              icon("sliders-h"), " Pairwise distances parameters"
             ),
             solidHeader = TRUE, status = "primary",
             fluidRow(
               column(3,
-                radioButtons(
-                  ns("model"),
-                  "Habitat model",
-                  choices = c(
-                    "2D \u2014 ln(distance km)" = "2D",
-                    "1D \u2014 distance km"     = "1D"
-                  ),
-                  selected = "2D"
-                ),
-                numericInput(ns("n_boot_pw"),  "Bootstrap per pair (CI):",
-                             value = 500, min = 100, max = 5000, step = 100),
-                numericInput(ns("n_perm"),     "Mantel permutations:",
-                             value = 9999, min = 99, max = 99999, step = 1000),
+                numericInput(ns("n_boot_dist"), "Bootstrap replicates (loci):",
+                             value = 1000, min = 100, max = 10000, step = 100),
+                checkboxInput(ns("calc_fst"), "Compute FST matrix", value = TRUE),
+                checkboxInput(ns("calc_cs"), "Compute Cavalli-Sforza distance", value = TRUE),
+                checkboxInput(ns("ena_correction"), "Apply ENA correction (null alleles)", value = TRUE),
                 tags$hr(),
                 actionButton(
-                  ns("run"), "Run IBD Analysis",
-                  icon  = icon("rocket"),
+                  ns("run_dist"), "Compute Pairwise Distances",
+                  icon  = icon("calculator"),
                   class = "btn-action-primary btn-block",
                   style = "font-weight:bold;"
                 )
               ),
               column(9,
-                h4(icon("chart-line"), "Results summary",
+                h4(icon("table"), "Results summary",
                    style = "font-weight:600; color:#2c3e50; margin-bottom:15px;"),
                 fluidRow(
-                  column(3, valueBoxOutput(ns("box_npops"),    width = NULL)),
-                  column(3, valueBoxOutput(ns("box_npairs"),   width = NULL)),
-                  column(3, valueBoxOutput(ns("box_mantel_r"), width = NULL)),
-                  column(3, valueBoxOutput(ns("box_pval"),     width = NULL))
+                  column(3, valueBoxOutput(ns("box_npops_dist"), width = NULL)),
+                  column(3, valueBoxOutput(ns("box_nloci_dist"), width = NULL)),
+                  column(3, valueBoxOutput(ns("box_npairs_dist"), width = NULL)),
+                  column(3, valueBoxOutput(ns("box_boot_dist"), width = NULL))
                 ),
-                # Regression summary table (b, Nb, Nem for 3 lines)
-                tags$h5("Regression parameters",
+                tags$h5("Pairwise distances matrix",
                         style = "font-weight:600; margin-top:14px; color:#2c3e50;"),
-                DT::DTOutput(ns("reg_table"))
+                DT::DTOutput(ns("dist_matrix_table"))
               )
             )
           )
         ),
 
-        # ── IBD plot ───────────────────────────────────────────────────────
+        # Detailed pairwise table
+        fluidRow(
+          box(
+            width = 12,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("list"), " Detailed pairwise results"
+            ),
+            solidHeader = FALSE,
+            DT::DTOutput(ns("pairwise_detail_table")),
+            tags$br(),
+            downloadButton(ns("dl_pairwise_csv"), "Download CSV",
+                           class = "btn-action-secondary btn-sm")
+          )
+        )
+      ),
+
+      # ── TAB 2: Mantel Test ─────────────────────────────────────────────────
+      tabPanel(
+        title = "Mantel Test",
+        icon = icon("chart-line"),
+        tags$div(
+          class = "spg-method-note", style = "border-left-color:#2CBF9F;",
+          HTML(paste0(
+            "Mantel test (Mantel 1967) assesses the correlation between two distance matrices ",
+            "(e.g., genetic vs geographic distances). Significance is tested by permutation of rows/columns. ",
+            "The test can be run on <b>rectangular format</b> (column-wise data as in Fstat/RT) ",
+            "or on full distance matrices. ",
+            "<b>Requires either computed pairwise distances + GPS coordinates, or uploaded distance files.</b>"
+          ))
+        ),
+
+        # Configuration
+        fluidRow(
+          box(
+            width = 12,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("sliders-h"), " Mantel test parameters"
+            ),
+            solidHeader = TRUE, status = "primary",
+            fluidRow(
+              column(3,
+                radioButtons(
+                  ns("mantel_data_source"),
+                  "Data source:",
+                  choices = c(
+                    "Use computed pairwise distances" = "computed",
+                    "Upload distance files" = "upload"
+                  ),
+                  selected = "computed"
+                ),
+                conditionalPanel(
+                  condition = "input.mantel_data_source == 'upload'",
+                  ns = ns,
+                  fileInput(ns("file_gen_dist"), "Genetic distance file (CSV):",
+                            accept = c(".csv", ".txt")),
+                  fileInput(ns("file_geo_dist"), "Geographic distance file (CSV):",
+                            accept = c(".csv", ".txt"))
+                ),
+                numericInput(ns("n_perm_mantel"), "Permutations:",
+                             value = 9999, min = 99, max = 99999, step = 1000),
+                selectInput(ns("mantel_method"), "Correlation method:",
+                            choices = c("Pearson" = "pearson",
+                                       "Spearman" = "spearman"),
+                            selected = "pearson"),
+                tags$hr(),
+                actionButton(
+                  ns("run_mantel"), "Run Mantel Test",
+                  icon  = icon("play"),
+                  class = "btn-action-primary btn-block",
+                  style = "font-weight:bold;"
+                )
+              ),
+              column(9,
+                h4(icon("chart-bar"), "Mantel test results",
+                   style = "font-weight:600; color:#2c3e50; margin-bottom:15px;"),
+                fluidRow(
+                  column(4, valueBoxOutput(ns("box_mantel_r"), width = NULL)),
+                  column(4, valueBoxOutput(ns("box_mantel_p"), width = NULL)),
+                  column(4, valueBoxOutput(ns("box_mantel_n"), width = NULL))
+                ),
+                tags$h5("Test details",
+                        style = "font-weight:600; margin-top:14px; color:#2c3e50;"),
+                verbatimTextOutput(ns("mantel_summary"))
+              )
+            )
+          )
+        ),
+
+        # Mantel plot
         fluidRow(
           box(
             width = 8,
             title = div(
               style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("chart-line"), " IBD plot"
+              icon("chart-scatter"), " Mantel scatter plot"
             ),
             solidHeader = FALSE,
-            plotly::plotlyOutput(ns("ibd_plot"), height = "460px")
+            plotly::plotlyOutput(ns("mantel_plot"), height = "500px")
           ),
           box(
             width = 4,
@@ -127,132 +199,19 @@ isolation_by_distance_UI <- function(id) {
             solidHeader = FALSE,
             tags$div(
               style = "font-size:13px; line-height:1.8;",
-              tags$p(tags$strong("Three regression lines")),
+              tags$p(tags$strong("Mantel statistic (r):")),
               tags$ul(
                 style = "font-size:12px; padding-left:16px; line-height:1.9;",
-                tags$li(tags$span(style="color:#333a43; font-weight:600;", "Average"), " \u2014 regression through point estimates of F",tags$sub("ST"),"\u2044(1\u2212F",tags$sub("ST"),")"),
-                tags$li(tags$span(style="color:#B40F20; font-weight:600;", "Upper CI (ls)"), " \u2014 regression through upper 95% CI bounds"),
-                tags$li(tags$span(style="color:#3B9AB2; font-weight:600;", "Lower CI (li)"), " \u2014 regression through lower 95% CI bounds")
+                tags$li("Correlation between two distance matrices"),
+                tags$li("Ranges from -1 to 1"),
+                tags$li("Positive r: distances increase together")
               ),
-              tags$p(tags$strong("Slope b"), " \u2014 in the 2D model: b = 1/N",tags$sub("b")," where N",tags$sub("b")," is the neighbourhood size."),
-              tags$p(tags$strong("N",tags$sub("b")," = 1/b"), " \u2014 number of individuals in the dispersal neighbourhood."),
-              tags$p(tags$strong("N",tags$sub("em")," = 1/(2\u03c0b)"), " \u2014 effective number of migrants per generation."),
+              tags$p(tags$strong("P-value:"), " Probability of observing such correlation by chance (permutation test)"),
+              tags$p(tags$strong("Significance:"), " p < 0.05 indicates significant isolation by distance"),
               tags$hr(),
               tags$p(style = "color:#777; font-size:12px;",
-                "Rousset (1997) Genetics 145:1219. de Mee\u00fbs (2006) Infect Genet Evol.")
+                "Mantel N. 1967. Math. Geol. 15:65-75.")
             )
-          )
-        ),
-
-        # ── Pairwise FST table ─────────────────────────────────────────────
-        fluidRow(
-          box(
-            width = 7,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("table"), " Pairwise F\u209b\u209c & linearised values"
-            ),
-            solidHeader = FALSE,
-            DT::DTOutput(ns("fst_table")),
-            tags$br(),
-            downloadButton(ns("dl_fst"), "Download table",
-                           class = "btn-action-secondary btn-sm")
-          ),
-          box(
-            width = 5,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("ruler"), " Pairwise distances (km)"
-            ),
-            solidHeader = FALSE,
-            DT::DTOutput(ns("dist_table")),
-            tags$br(),
-            downloadButton(ns("dl_dist"), "Download distances",
-                           class = "btn-action-secondary btn-sm")
-          )
-        )
-      ),
-
-      # ── Tab 2: Bootstrap Confidence Intervals ──────────────────────────
-      tabPanel(
-        "Bootstrap CIs",
-        icon = icon("braces"),
-
-        fluidRow(
-          box(
-            width = 12,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("chart-bar"), " Bootstrap Confidence Intervals (over loci)"
-            ),
-            solidHeader = FALSE,
-            tags$div(
-              style = "background:#f8f9fa; padding:15px; border-radius:6px; margin-bottom:15px;",
-              HTML(paste0(
-                "Bootstrap resampling over loci (", 
-                tags$strong("n_loci"), " replicates) to compute 95% confidence intervals ",
-                "for pairwise F<sub>ST</sub> and linearised F<sub>ST</sub>/(1-F<sub>ST</sub>) values. ",
-                "This follows the approach of FreeNA (Chapuis & Estoup 2007)."
-              ))
-            ),
-            fluidRow(
-              column(4,
-                h5("Bootstrap parameters", style = "font-weight:600;"),
-                numericInput(ns("n_boot_loci"), "Number of bootstrap replicates:",
-                             value = 1000, min = 100, max = 10000, step = 100),
-                br(),
-                actionButton(
-                  ns("run_boot"), "Run Bootstrap",
-                  icon = icon("play"),
-                  class = "btn-action-primary",
-                  style = "font-weight:bold;"
-                )
-              ),
-              column(8,
-                h5("Bootstrap summary", style = "font-weight:600;"),
-                fluidRow(
-                  column(4, valueBoxOutput(ns("boot_n_loci"), width = NULL)),
-                  column(4, valueBoxOutput(ns("boot_n_reps"), width = NULL)),
-                  column(4, valueBoxOutput(ns("boot_n_valid"), width = NULL))
-                )
-              )
-            )
-          )
-        ),
-
-        fluidRow(
-          box(
-            width = 12,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("table"), " Bootstrap CI results"
-            ),
-            solidHeader = FALSE,
-            DT::DTOutput(ns("boot_table")),
-            tags$br(),
-            downloadButton(ns("dl_boot"), "Download bootstrap results",
-                           class = "btn-action-secondary btn-sm")
-          )
-        ),
-
-        fluidRow(
-          box(
-            width = 6,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("chart-line"), " FST CI plot"
-            ),
-            solidHeader = FALSE,
-            plotly::plotlyOutput(ns("boot_fst_plot"), height = "400px")
-          ),
-          box(
-            width = 6,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("chart-line"), " FR (linearised) CI plot"
-            ),
-            solidHeader = FALSE,
-            plotly::plotlyOutput(ns("boot_fr_plot"), height = "400px")
           )
         )
       )
