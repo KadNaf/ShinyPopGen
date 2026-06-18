@@ -2,6 +2,7 @@
 # Tab: Isolation by Distance
 # Rousset (1997) linearised FST/(1-FST) vs geographic distance, Mantel test.
 # Three regression lines: average, upper 95% CI, lower 95% CI.
+# Two tabs: IBD Analysis and Bootstrap Confidence Intervals
 
 isolation_by_distance_UI <- function(id) {
   ns <- NS(id)
@@ -46,118 +47,214 @@ isolation_by_distance_UI <- function(id) {
       ))
     ),
 
-    # ── Configuration ─────────────────────────────────────────────────────────
-    fluidRow(
-      box(
-        width = 12,
-        title = div(
-          style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-          icon("sliders-h"), " IBD parameters"
-        ),
-        solidHeader = TRUE, status = "primary",
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tabsetPanel(
+      id = ns("ibd_tabs"),
+      type = "tabs",
+
+      # ── Tab 1: IBD Analysis ──────────────────────────────────────────────
+      tabPanel(
+        "IBD Analysis",
+        icon = icon("chart-line"),
+
+        # ── Configuration ─────────────────────────────────────────────────
         fluidRow(
-          column(3,
-            radioButtons(
-              ns("model"),
-              "Habitat model",
-              choices = c(
-                "2D \u2014 ln(distance km)" = "2D",
-                "1D \u2014 distance km"     = "1D"
-              ),
-              selected = "2D"
+          box(
+            width = 12,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("sliders-h"), " IBD parameters"
             ),
-            numericInput(ns("n_boot_pw"),  "Bootstrap per pair (CI):",
-                         value = 500, min = 100, max = 5000, step = 100),
-            numericInput(ns("n_perm"),     "Mantel permutations:",
-                         value = 9999, min = 99, max = 99999, step = 1000),
-            tags$hr(),
-            actionButton(
-              ns("run"), "Run IBD Analysis",
-              icon  = icon("rocket"),
-              class = "btn-action-primary btn-block",
-              style = "font-weight:bold;"
-            )
-          ),
-          column(9,
-            h4(icon("chart-line"), "Results summary",
-               style = "font-weight:600; color:#2c3e50; margin-bottom:15px;"),
+            solidHeader = TRUE, status = "primary",
             fluidRow(
-              column(3, valueBoxOutput(ns("box_npops"),    width = NULL)),
-              column(3, valueBoxOutput(ns("box_npairs"),   width = NULL)),
-              column(3, valueBoxOutput(ns("box_mantel_r"), width = NULL)),
-              column(3, valueBoxOutput(ns("box_pval"),     width = NULL))
+              column(3,
+                radioButtons(
+                  ns("model"),
+                  "Habitat model",
+                  choices = c(
+                    "2D \u2014 ln(distance km)" = "2D",
+                    "1D \u2014 distance km"     = "1D"
+                  ),
+                  selected = "2D"
+                ),
+                numericInput(ns("n_boot_pw"),  "Bootstrap per pair (CI):",
+                             value = 500, min = 100, max = 5000, step = 100),
+                numericInput(ns("n_perm"),     "Mantel permutations:",
+                             value = 9999, min = 99, max = 99999, step = 1000),
+                tags$hr(),
+                actionButton(
+                  ns("run"), "Run IBD Analysis",
+                  icon  = icon("rocket"),
+                  class = "btn-action-primary btn-block",
+                  style = "font-weight:bold;"
+                )
+              ),
+              column(9,
+                h4(icon("chart-line"), "Results summary",
+                   style = "font-weight:600; color:#2c3e50; margin-bottom:15px;"),
+                fluidRow(
+                  column(3, valueBoxOutput(ns("box_npops"),    width = NULL)),
+                  column(3, valueBoxOutput(ns("box_npairs"),   width = NULL)),
+                  column(3, valueBoxOutput(ns("box_mantel_r"), width = NULL)),
+                  column(3, valueBoxOutput(ns("box_pval"),     width = NULL))
+                ),
+                # Regression summary table (b, Nb, Nem for 3 lines)
+                tags$h5("Regression parameters",
+                        style = "font-weight:600; margin-top:14px; color:#2c3e50;"),
+                DT::DTOutput(ns("reg_table"))
+              )
+            )
+          )
+        ),
+
+        # ── IBD plot ───────────────────────────────────────────────────────
+        fluidRow(
+          box(
+            width = 8,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("chart-line"), " IBD plot"
             ),
-            # Regression summary table (b, Nb, Nem for 3 lines)
-            tags$h5("Regression parameters",
-                    style = "font-weight:600; margin-top:14px; color:#2c3e50;"),
-            DT::DTOutput(ns("reg_table"))
+            solidHeader = FALSE,
+            plotly::plotlyOutput(ns("ibd_plot"), height = "460px")
+          ),
+          box(
+            width = 4,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("info-circle"), " Interpretation"
+            ),
+            solidHeader = FALSE,
+            tags$div(
+              style = "font-size:13px; line-height:1.8;",
+              tags$p(tags$strong("Three regression lines")),
+              tags$ul(
+                style = "font-size:12px; padding-left:16px; line-height:1.9;",
+                tags$li(tags$span(style="color:#333a43; font-weight:600;", "Average"), " \u2014 regression through point estimates of F",tags$sub("ST"),"\u2044(1\u2212F",tags$sub("ST"),")"),
+                tags$li(tags$span(style="color:#B40F20; font-weight:600;", "Upper CI (ls)"), " \u2014 regression through upper 95% CI bounds"),
+                tags$li(tags$span(style="color:#3B9AB2; font-weight:600;", "Lower CI (li)"), " \u2014 regression through lower 95% CI bounds")
+              ),
+              tags$p(tags$strong("Slope b"), " \u2014 in the 2D model: b = 1/N",tags$sub("b")," where N",tags$sub("b")," is the neighbourhood size."),
+              tags$p(tags$strong("N",tags$sub("b")," = 1/b"), " \u2014 number of individuals in the dispersal neighbourhood."),
+              tags$p(tags$strong("N",tags$sub("em")," = 1/(2\u03c0b)"), " \u2014 effective number of migrants per generation."),
+              tags$hr(),
+              tags$p(style = "color:#777; font-size:12px;",
+                "Rousset (1997) Genetics 145:1219. de Mee\u00fbs (2006) Infect Genet Evol.")
+            )
+          )
+        ),
+
+        # ── Pairwise FST table ─────────────────────────────────────────────
+        fluidRow(
+          box(
+            width = 7,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("table"), " Pairwise F\u209b\u209c & linearised values"
+            ),
+            solidHeader = FALSE,
+            DT::DTOutput(ns("fst_table")),
+            tags$br(),
+            downloadButton(ns("dl_fst"), "Download table",
+                           class = "btn-action-secondary btn-sm")
+          ),
+          box(
+            width = 5,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("ruler"), " Pairwise distances (km)"
+            ),
+            solidHeader = FALSE,
+            DT::DTOutput(ns("dist_table")),
+            tags$br(),
+            downloadButton(ns("dl_dist"), "Download distances",
+                           class = "btn-action-secondary btn-sm")
           )
         )
-      )
-    ),
-
-    # ── IBD plot ───────────────────────────────────────────────────────────────
-    fluidRow(
-      box(
-        width = 8,
-        title = div(
-          style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-          icon("chart-line"), " IBD plot"
-        ),
-        solidHeader = FALSE,
-        plotly::plotlyOutput(ns("ibd_plot"), height = "460px")
       ),
-      box(
-        width = 4,
-        title = div(
-          style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-          icon("info-circle"), " Interpretation"
+
+      # ── Tab 2: Bootstrap Confidence Intervals ──────────────────────────
+      tabPanel(
+        "Bootstrap CIs",
+        icon = icon("braces"),
+
+        fluidRow(
+          box(
+            width = 12,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("chart-bar"), " Bootstrap Confidence Intervals (over loci)"
+            ),
+            solidHeader = FALSE,
+            tags$div(
+              style = "background:#f8f9fa; padding:15px; border-radius:6px; margin-bottom:15px;",
+              HTML(paste0(
+                "Bootstrap resampling over loci (", 
+                tags$strong("n_loci"), " replicates) to compute 95% confidence intervals ",
+                "for pairwise F<sub>ST</sub> and linearised F<sub>ST</sub>/(1-F<sub>ST</sub>) values. ",
+                "This follows the approach of FreeNA (Chapuis & Estoup 2007)."
+              ))
+            ),
+            fluidRow(
+              column(4,
+                h5("Bootstrap parameters", style = "font-weight:600;"),
+                numericInput(ns("n_boot_loci"), "Number of bootstrap replicates:",
+                             value = 1000, min = 100, max = 10000, step = 100),
+                br(),
+                actionButton(
+                  ns("run_boot"), "Run Bootstrap",
+                  icon = icon("play"),
+                  class = "btn-action-primary",
+                  style = "font-weight:bold;"
+                )
+              ),
+              column(8,
+                h5("Bootstrap summary", style = "font-weight:600;"),
+                fluidRow(
+                  column(4, valueBoxOutput(ns("boot_n_loci"), width = NULL)),
+                  column(4, valueBoxOutput(ns("boot_n_reps"), width = NULL)),
+                  column(4, valueBoxOutput(ns("boot_n_valid"), width = NULL))
+                )
+              )
+            )
+          )
         ),
-        solidHeader = FALSE,
-        tags$div(
-          style = "font-size:13px; line-height:1.8;",
-          tags$p(tags$strong("Three regression lines")),
-          tags$ul(
-            style = "font-size:12px; padding-left:16px; line-height:1.9;",
-            tags$li(tags$span(style="color:#333a43; font-weight:600;", "Average"), " \u2014 regression through point estimates of F",tags$sub("ST"),"\u2044(1\u2212F",tags$sub("ST"),")"),
-            tags$li(tags$span(style="color:#B40F20; font-weight:600;", "Upper CI (ls)"), " \u2014 regression through upper 95% CI bounds"),
-            tags$li(tags$span(style="color:#3B9AB2; font-weight:600;", "Lower CI (li)"), " \u2014 regression through lower 95% CI bounds")
+
+        fluidRow(
+          box(
+            width = 12,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("table"), " Bootstrap CI results"
+            ),
+            solidHeader = FALSE,
+            DT::DTOutput(ns("boot_table")),
+            tags$br(),
+            downloadButton(ns("dl_boot"), "Download bootstrap results",
+                           class = "btn-action-secondary btn-sm")
+          )
+        ),
+
+        fluidRow(
+          box(
+            width = 6,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("chart-line"), " FST CI plot"
+            ),
+            solidHeader = FALSE,
+            plotly::plotlyOutput(ns("boot_fst_plot"), height = "400px")
           ),
-          tags$p(tags$strong("Slope b"), " \u2014 in the 2D model: b = 1/N",tags$sub("b")," where N",tags$sub("b")," is the neighbourhood size."),
-          tags$p(tags$strong("N",tags$sub("b")," = 1/b"), " \u2014 number of individuals in the dispersal neighbourhood."),
-          tags$p(tags$strong("N",tags$sub("em")," = 1/(2\u03c0b)"), " \u2014 effective number of migrants per generation."),
-          tags$hr(),
-          tags$p(style = "color:#777; font-size:12px;",
-            "Rousset (1997) Genetics 145:1219. de Mee\u00fbs (2006) Infect Genet Evol.")
+          box(
+            width = 6,
+            title = div(
+              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+              icon("chart-line"), " FR (linearised) CI plot"
+            ),
+            solidHeader = FALSE,
+            plotly::plotlyOutput(ns("boot_fr_plot"), height = "400px")
+          )
         )
-      )
-    ),
-
-    # ── Pairwise FST table ─────────────────────────────────────────────────────
-    fluidRow(
-      box(
-        width = 7,
-        title = div(
-          style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-          icon("table"), " Pairwise F\u209b\u209c & linearised values"
-        ),
-        solidHeader = FALSE,
-        DT::DTOutput(ns("fst_table")),
-        tags$br(),
-        downloadButton(ns("dl_fst"), "Download table",
-                       class = "btn-action-secondary btn-sm")
-      ),
-      box(
-        width = 5,
-        title = div(
-          style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-          icon("ruler"), " Pairwise distances (km)"
-        ),
-        solidHeader = FALSE,
-        DT::DTOutput(ns("dist_table")),
-        tags$br(),
-        downloadButton(ns("dl_dist"), "Download distances",
-                       class = "btn-action-secondary btn-sm")
       )
     )
   )

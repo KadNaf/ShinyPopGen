@@ -1,6 +1,7 @@
 # server_isolation_by_distance.R
 # IBD: Rousset (1997) FST/(1-FST) vs geographic distance + Mantel test.
-#
+# Bootstrap confidence intervals over loci (FreeNA approach).
+
 # Source of truth: DuckDB tables raw (string genotypes) + meta (GPS).
 # Pairwise FST via FreeNA ENA correction (Chapuis & Estoup 2007):
 #   - EM null allele frequency per locus per population
@@ -235,10 +236,115 @@
   do.call(rbind, result)
 }
 
+# ---------------------------------------------------------------------------
+# Bootstrap over loci (FreeNA approach)
+# ---------------------------------------------------------------------------
+
+# Bootstrap over loci to compute confidence intervals for pairwise FST and FR
+# This follows the approach used in FreeNA: resampling loci with replacement
+# Returns list with bootstrap results for each pair
+.bootstrap_over_loci <- function(hap_df, pop_vector, null_code = "999999",
+                                  n_boot = 1000, conf = 0.95) {
+  pops    <- sort(unique(pop_vector))
+  loci    <- colnames(hap_df)
+  n_loci  <- length(loci)
+  n_pops  <- length(pops)
+  alpha   <- (1 - conf) / 2
+  n_cores <- max(1L, parallel::detectCores() - 1L)
+
+  # Compute FST for given locus indices
+  .fst_loci <- function(idx1, idx2, locus_indices) {
+    a_tot <- 0; b_tot <- 0; c_tot <- 0; ok <- 0L
+    for (locus in locus_indices) {
+      em1  <- .ibd_em_null(hap_df[[loci[locus]]][idx1], null_code)
+      em2  <- .ibd_em_null(hap_df[[loci[locus]]][idx2], null_code)
+      comp <- .wc84_ena_2pop(em1, em2)
+      if (is.null(comp)) next
+      a_tot <- a_tot + comp$a; b_tot <- b_tot + comp$b; c_tot <- c_tot + comp$c
+      ok <- ok + 1L
+    }
+    if (ok == 0L || (a_tot + b_tot + c_tot) == 0) return(NA_real_)
+    a_tot / (a_tot + b_tot + c_tot)
+  }
+
+  # Pre-compute individual indices for each population
+  pop_indices <- lapply(pops, function(p) which(pop_vector == p))
+  names(pop_indices) <- pops
+
+  # Result list
+  result <- vector("list", n_pops * (n_pops - 1L) / 2L)
+  k <- 1L
+
+  for (i in seq_len(n_pops - 1L)) {
+    for (j in (i + 1L):n_pops) {
+      pi <- pops[i]; pj <- pops[j]
+      idx1 <- pop_indices[[pi]]
+      idx2 <- pop_indices[[pj]]
+
+      if (length(idx1) < 2L || length(idx2) < 2L) {
+        result[[k]] <- data.frame(
+          pop_i = pi, pop_j = pj,
+          fst = NA_real_, fst_ci_l = NA_real_, fst_ci_u = NA_real_,
+          fr = NA_real_, fr_ci_l = NA_real_, fr_ci_u = NA_real_,
+          n_loci_used = 0L,
+          stringsAsFactors = FALSE
+        )
+        k <- k + 1L; next
+      }
+
+      # Observed FST (all loci)
+      fst_obs <- .fst_loci(idx1, idx2, seq_len(n_loci))
+
+      # Bootstrap over loci
+      boot_list <- parallel::mclapply(seq_len(n_boot), function(.b) {
+        locus_idx <- sample(seq_len(n_loci), n_loci, replace = TRUE)
+        .fst_loci(idx1, idx2, locus_idx)
+      }, mc.cores = n_cores)
+
+      boot_fst <- unlist(boot_list, use.names = FALSE)
+      boot_fst <- boot_fst[is.finite(boot_fst)]
+
+      # Compute confidence intervals
+      fst_ci_l <- fst_ci_u <- NA_real_
+      if (length(boot_fst) > 0L) {
+        q <- quantile(boot_fst, probs = c(alpha, 1 - alpha), na.rm = TRUE)
+        fst_ci_l <- q[[1L]]; fst_ci_u <- q[[2L]]
+      }
+
+      # Linearise
+      fr_obs <- .linearise(fst_obs)
+      fr_boot <- .linearise(boot_fst)
+      fr_boot <- fr_boot[is.finite(fr_boot)]
+
+      fr_ci_l <- fr_ci_u <- NA_real_
+      if (length(fr_boot) > 0L) {
+        q <- quantile(fr_boot, probs = c(alpha, 1 - alpha), na.rm = TRUE)
+        fr_ci_l <- q[[1L]]; fr_ci_u <- q[[2L]]
+      }
+
+      result[[k]] <- data.frame(
+        pop_i = pi, pop_j = pj,
+        fst = fst_obs, fst_ci_l = fst_ci_l, fst_ci_u = fst_ci_u,
+        fr = fr_obs, fr_ci_l = fr_ci_l, fr_ci_u = fr_ci_u,
+        n_loci_used = n_loci,
+        stringsAsFactors = FALSE
+      )
+      k <- k + 1L
+    }
+  }
+  do.call(rbind, result)
+}
+
 .linearise <- function(x) {
   # FST / (1 - FST); clamp to [0, 0.9999] before dividing
+  if (is.na(x)) return(NA_real_)
   x <- pmin(pmax(x, 0), 0.9999)
   x / (1 - x)
+}
+
+# Vectorised linearise
+.linearise_vec <- function(x) {
+  vapply(x, .linearise, numeric(1))
 }
 
 .mantel_test <- function(fr_vec, dist_vec, n_perm = 9999, use_log = FALSE) {
@@ -272,7 +378,8 @@
 .reg_params <- function(y, x, use_log) {
   xv <- if (use_log) log(x) else x
   ok <- is.finite(y) & is.finite(xv)
-  if (sum(ok) < 3L) return(c(b = NA_real_, Nb = NA_real_, Nem = NA_real_))
+  if (sum(ok) < 3L) return(c(intercept = NA_real_, b = NA_real_, 
+                             Nb = NA_real_, Nem = NA_real_))
   cf <- coef(lm(y[ok] ~ xv[ok]))
   b  <- unname(cf[2L])
   list(
@@ -294,7 +401,7 @@ server_isolation_by_distance <- function(id, rv) {
     `%||%`     <- function(x, y) if (is.null(x) || length(x) == 0L || all(is.na(x))) y else x
     db_tick    <- reactive({ rv$db_tick })
     con_r      <- reactive({ shiny::req(rv$con); rv$con })
-    tbl_meta_r <- reactive({ rv$tbl_meta %|||% "meta" })
+    tbl_meta_r <- reactive({ rv$tbl_meta %||% "meta" })
 
     db_ready <- reactive({
       db_tick()
@@ -331,8 +438,6 @@ server_isolation_by_distance <- function(id, rv) {
     })
 
     # ── Raw string genotypes (for FreeNA ENA-corrected FST) ────────────────
-    # Reads from the DuckDB raw table, reconstructing "a/b" strings per locus.
-    # Returns list(hap_df, pop_vector) identical in structure to null_alleles.
     raw_genos_r <- reactive({
       db_ready()
       con     <- con_r()
@@ -369,8 +474,6 @@ server_isolation_by_distance <- function(id, rv) {
         stringsAsFactors = FALSE)
       shiny::validate(shiny::need(nrow(raw_df) > 0L, "No rows in raw table."))
 
-      # Population assignment: always from meta (single source of truth).
-      # Join raw rows (by rowid = individual) to meta Population column.
       meta_pop <- DBI::dbGetQuery(con, sprintf(
         "SELECT individual, Population FROM %s WHERE Population IS NOT NULL",
         sql_ident(con, tbl_meta_r())))
@@ -423,7 +526,6 @@ server_isolation_by_distance <- function(id, rv) {
       hap_df     <- rg$hap_df
       pop_vector <- rg$pop_vector
 
-      # Keep only populations that have GPS data
       pops_with_gps <- coords$Population
       keep_pop      <- pop_vector %in% pops_with_gps
       shiny::validate(shiny::need(
@@ -452,9 +554,9 @@ server_isolation_by_distance <- function(id, rv) {
       pw$dist_km <- mapply(get_dist, pw$pop_i, pw$pop_j)
 
       # Linearised FST (F_R, F_R_i, F_R_s)
-      pw$FR   <- .linearise(pw$fst)
-      pw$FR_i <- .linearise(pw$ci_l)
-      pw$FR_s <- .linearise(pw$ci_u)
+      pw$FR   <- .linearise_vec(pw$fst)
+      pw$FR_i <- .linearise_vec(pw$ci_l)
+      pw$FR_s <- .linearise_vec(pw$ci_u)
 
       # Three regression fits
       reg_avg <- .reg_params(pw$FR,   pw$dist_km, use_log)
@@ -473,8 +575,33 @@ server_isolation_by_distance <- function(id, rv) {
         reg_ls   = reg_ls,
         reg_li   = reg_li,
         mantel   = mantel,
-        use_log  = use_log
+        use_log  = use_log,
+        hap_df   = hap_sub,
+        pop_vector = pop_sub,
+        pops     = new_levels
       )
+    })
+
+    # ── Bootstrap results (triggered by Run Bootstrap) ─────────────────────
+    boot_results_r <- eventReactive(input$run_boot, {
+      shiny::req(results_r())
+      res <- results_r()
+      n_boot <- as.integer(input$n_boot_loci)
+
+      withProgress(message = "Bootstrapping over loci...", value = 0.3, {
+        boot <- .bootstrap_over_loci(res$hap_df, res$pop_vector, 
+                                      n_boot = n_boot)
+      })
+
+      # Merge with geographic distances
+      dist_mat <- res$dist_mat
+      get_dist <- function(p1, p2) {
+        if (p1 %in% rownames(dist_mat) && p2 %in% rownames(dist_mat))
+          dist_mat[p1, p2] else NA_real_
+      }
+      boot$dist_km <- mapply(get_dist, boot$pop_i, boot$pop_j)
+
+      boot
     })
 
     # ── Summary boxes ──────────────────────────────────────────────────────
@@ -542,9 +669,7 @@ server_isolation_by_distance <- function(id, rv) {
       line_ls  <- reg_line(r$reg_ls)
       line_li  <- reg_line(r$reg_li)
 
-      # Build plot
       p <- plotly::plot_ly() %>%
-
         # Error bars (CI segment per point)
         plotly::add_segments(
           data = pw,
@@ -552,7 +677,6 @@ server_isolation_by_distance <- function(id, rv) {
           line = list(color = "rgba(100,100,100,0.35)", width = 1),
           showlegend = FALSE, hoverinfo = "none"
         ) %>%
-
         # Scatter points
         plotly::add_markers(
           data = data.frame(x = xv, y = pw$FR,
@@ -569,28 +693,24 @@ server_isolation_by_distance <- function(id, rv) {
           marker = list(color = "#2CBF9F", size = 7, opacity = 0.85),
           name = "Pairs"
         ) %>%
-
         # Regression line: Average
         { if (!is.null(line_avg))
             plotly::add_lines(., data = line_avg, x = ~x, y = ~y,
               line = list(color = "#333a43", width = 2, dash = "solid"),
               name = paste0("Average  b=", formatC(r$reg_avg$b, format="f", digits=4)))
           else . } %>%
-
         # Regression line: Upper CI (ls)
         { if (!is.null(line_ls))
             plotly::add_lines(., data = line_ls, x = ~x, y = ~y,
               line = list(color = "#B40F20", width = 1.5, dash = "dash"),
               name = paste0("Upper CI (ls)  b=", formatC(r$reg_ls$b, format="f", digits=4)))
           else . } %>%
-
         # Regression line: Lower CI (li)
         { if (!is.null(line_li))
             plotly::add_lines(., data = line_li, x = ~x, y = ~y,
               line = list(color = "#3B9AB2", width = 1.5, dash = "dot"),
               name = paste0("Lower CI (li)  b=", formatC(r$reg_li$b, format="f", digits=4)))
           else . } %>%
-
         plotly::layout(
           xaxis  = list(title = x_label),
           yaxis  = list(title = "F\u209b\u209c / (1 \u2212 F\u209b\u209c)"),
@@ -647,6 +767,122 @@ server_isolation_by_distance <- function(id, rv) {
         class   = "compact stripe hover")
     })
 
+    # ── Bootstrap summary boxes ────────────────────────────────────────────
+    output$boot_n_loci <- renderValueBox({
+      r <- results_r()
+      valueBox(ncol(r$hap_df), HTML("Number of<br>loci"), 
+               icon = icon("dna"), color = "teal")
+    })
+    
+    output$boot_n_reps <- renderValueBox({
+      valueBox(input$n_boot_loci, HTML("Bootstrap<br>replicates"), 
+               icon = icon("repeat"), color = "blue")
+    })
+    
+    output$boot_n_valid <- renderValueBox({
+      boot <- boot_results_r()
+      n_valid <- sum(!is.na(boot$fst))
+      valueBox(n_valid, HTML("Valid pairwise<br>estimates"), 
+               icon = icon("check-circle"), color = "green")
+    })
+
+    # ── Bootstrap table ────────────────────────────────────────────────────
+    output$boot_table <- DT::renderDT({
+      boot <- boot_results_r()
+      df <- data.frame(
+        Pop1 = boot$pop_i,
+        Pop2 = boot$pop_j,
+        Dist_km = round(boot$dist_km, 2),
+        FST = round(boot$fst, 5),
+        FST_CI_low = round(boot$fst_ci_l, 5),
+        FST_CI_high = round(boot$fst_ci_u, 5),
+        FR = round(boot$fr, 5),
+        FR_CI_low = round(boot$fr_ci_l, 5),
+        FR_CI_high = round(boot$fr_ci_u, 5),
+        N_loci = boot$n_loci_used,
+        stringsAsFactors = FALSE
+      )
+      DT::datatable(df, rownames = FALSE,
+        options = list(scrollX = TRUE, pageLength = 15,
+                       dom = "lrtip"),
+        class = "compact stripe hover",
+        colnames = c("Pop 1", "Pop 2", "Dist (km)",
+                     "FST", "FST CI low", "FST CI high",
+                     "FR", "FR CI low", "FR CI high",
+                     "N loci")
+      )
+    })
+
+    # ── Bootstrap FST plot ────────────────────────────────────────────────
+    output$boot_fst_plot <- plotly::renderPlotly({
+      boot <- boot_results_r()
+      
+      # Order by distance
+      boot <- boot[order(boot$dist_km), ]
+      boot$pair <- paste0(boot$pop_i, "–", boot$pop_j)
+      
+      p <- plotly::plot_ly() %>%
+        plotly::add_markers(
+          data = boot,
+          x = ~pair,
+          y = ~fst,
+          marker = list(color = "#2CBF9F", size = 8),
+          name = "FST",
+          hoverinfo = "text",
+          text = ~paste0(pair, "<br>Dist: ", round(dist_km, 1), " km<br>FST: ", round(fst, 4))
+        ) %>%
+        plotly::add_segments(
+          data = boot,
+          x = ~pair, xend = ~pair,
+          y = ~fst_ci_l, yend = ~fst_ci_u,
+          line = list(color = "rgba(44,191,159,0.5)", width = 2),
+          showlegend = FALSE,
+          hoverinfo = "none"
+        ) %>%
+        plotly::layout(
+          xaxis = list(title = "Population pair", tickangle = -45),
+          yaxis = list(title = "FST (FreeNA ENA-corrected)"),
+          title = "Bootstrap 95% CI for FST",
+          margin = list(b = 100)
+        )
+      p
+    })
+
+    # ── Bootstrap FR plot ────────────────────────────────────────────────
+    output$boot_fr_plot <- plotly::renderPlotly({
+      boot <- boot_results_r()
+      
+      # Order by distance
+      boot <- boot[order(boot$dist_km), ]
+      boot$pair <- paste0(boot$pop_i, "–", boot$pop_j)
+      
+      p <- plotly::plot_ly() %>%
+        plotly::add_markers(
+          data = boot,
+          x = ~pair,
+          y = ~fr,
+          marker = list(color = "#3B9AB2", size = 8),
+          name = "FR",
+          hoverinfo = "text",
+          text = ~paste0(pair, "<br>Dist: ", round(dist_km, 1), " km<br>FR: ", round(fr, 4))
+        ) %>%
+        plotly::add_segments(
+          data = boot,
+          x = ~pair, xend = ~pair,
+          y = ~fr_ci_l, yend = ~fr_ci_u,
+          line = list(color = "rgba(59,154,178,0.5)", width = 2),
+          showlegend = FALSE,
+          hoverinfo = "none"
+        ) %>%
+        plotly::layout(
+          xaxis = list(title = "Population pair", tickangle = -45),
+          yaxis = list(title = "FR = FST / (1 - FST)"),
+          title = "Bootstrap 95% CI for FR",
+          margin = list(b = 100)
+        )
+      p
+    })
+
     # ── Downloads ──────────────────────────────────────────────────────────
     output$dl_fst <- downloadHandler(
       filename = function() paste0("IBD_pairwise_FST_", Sys.Date(), ".csv"),
@@ -664,12 +900,30 @@ server_isolation_by_distance <- function(id, rv) {
         write.csv(df, file, row.names = FALSE)
       }
     )
+    
     output$dl_dist <- downloadHandler(
       filename = function() paste0("IBD_distances_km_", Sys.Date(), ".csv"),
       content  = function(file) {
         r  <- results_r()
         df <- as.data.frame(round(r$dist_mat, 4))
         df <- cbind(Population = rownames(df), df)
+        write.csv(df, file, row.names = FALSE)
+      }
+    )
+    
+    output$dl_boot <- downloadHandler(
+      filename = function() paste0("IBD_bootstrap_CI_", Sys.Date(), ".csv"),
+      content  = function(file) {
+        boot <- boot_results_r()
+        df <- data.frame(
+          Pop1 = boot$pop_i, Pop2 = boot$pop_j,
+          Dist_km = round(boot$dist_km, 4),
+          FST = round(boot$fst, 6), FST_CI_low = round(boot$fst_ci_l, 6),
+          FST_CI_high = round(boot$fst_ci_u, 6),
+          FR = round(boot$fr, 6), FR_CI_low = round(boot$fr_ci_l, 6),
+          FR_CI_high = round(boot$fr_ci_u, 6),
+          N_loci = boot$n_loci_used,
+          stringsAsFactors = FALSE)
         write.csv(df, file, row.names = FALSE)
       }
     )
