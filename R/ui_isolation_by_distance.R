@@ -68,6 +68,14 @@ isolation_by_distance_UI <- function(id) {
     .ibd-dl-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:.5rem; }
     .ibd-dl-row .btn { font-size:11px; padding:3px 12px; }
 
+    /* ── Matrix table ────────────────────────────────────────────────── */
+    .ibd-matrix-wrap { overflow-x:auto; margin-top:.5rem; }
+    .ibd-matrix { border-collapse:collapse; font-size:11px; font-family:'IBM Plex Mono',monospace; width:100%; }
+    .ibd-matrix th { background:#f8fafc; color:#475569; font-weight:600; padding:4px 9px; border:1px solid #e2e8f0; font-size:10.5px; white-space:nowrap; }
+    .ibd-matrix td { padding:4px 9px; border:1px solid #e2e8f0; color:#1e293b; text-align:right; white-space:nowrap; font-size:11px; }
+    .ibd-matrix tr:nth-child(even) td { background:#f8fafc; }
+    .ibd-matrix .lbl { font-weight:700; color:#0f172a; text-align:left; white-space:nowrap; }
+
     .ibd-module .dataTables_wrapper { font-size:12px; }
     .ibd-module table.dataTable thead th {
       background:#f8fafc !important; color:#475569 !important;
@@ -103,24 +111,24 @@ isolation_by_distance_UI <- function(id) {
     # ── Value boxes ─────────────────────────────────────────────────────────
     tags$div(class="ibd-vbox-row",
       tags$div(class="ibd-vbox",
-        tags$div(class="ibd-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("map-marker-alt")),
+        tags$div(class="ibd-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("dna")),
+        tags$div(tags$div(class="ibd-vbox-label","Loci"),
+                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_loci"))))),
+      tags$div(class="ibd-vbox",
+        tags$div(class="ibd-vbox-icon",style="background:#dcfce7;color:#166534;",icon("map-marker-alt")),
         tags$div(tags$div(class="ibd-vbox-label","Populations"),
                  tags$div(class="ibd-vbox-val",uiOutput(ns("vb_pops"))))),
       tags$div(class="ibd-vbox",
-        tags$div(class="ibd-vbox-icon",style="background:#dcfce7;color:#166534;",icon("project-diagram")),
+        tags$div(class="ibd-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("project-diagram")),
         tags$div(tags$div(class="ibd-vbox-label","Pairs"),
                  tags$div(class="ibd-vbox-val",uiOutput(ns("vb_pairs"))))),
       tags$div(class="ibd-vbox",
-        tags$div(class="ibd-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("chart-line")),
+        tags$div(class="ibd-vbox-icon",style="background:#fef9c3;color:#854d0e;",icon("chart-line")),
         tags$div(tags$div(class="ibd-vbox-label","Mantel r"),
                  tags$div(class="ibd-vbox-val",uiOutput(ns("vb_mantel_r"))))),
       tags$div(class="ibd-vbox",
-        tags$div(class="ibd-vbox-icon",style="background:#fef9c3;color:#854d0e;",icon("check-circle")),
-        tags$div(tags$div(class="ibd-vbox-label","p-value"),
-                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_pval"))))),
-      tags$div(class="ibd-vbox",
         tags$div(class="ibd-vbox-icon",style="background:#ccfbf1;color:#0d9488;",icon("ruler")),
-        tags$div(tags$div(class="ibd-vbox-label","N\u2093 (avg)"),
+        tags$div(tags$div(class="ibd-vbox-label","N\u2093"),
                  tags$div(class="ibd-vbox-val",uiOutput(ns("vb_nb")))))
     ),
 
@@ -129,10 +137,10 @@ isolation_by_distance_UI <- function(id) {
     # ════════════════════════════════════════════════════════════════════════
     tabsetPanel(id = ns("ibd_tabs"), type = "tabs",
 
-      # ── TAB 1: IBD Analysis ──────────────────────────────────────────────
+      # ── TAB 1: Pairwise IBD Analysis ─────────────────────────────────────
       tabPanel(
-        title = tagList(icon("chart-line"), " IBD Analysis"),
-        value = "tab_ibd", br(),
+        title = tagList(icon("project-diagram"), " Pairwise IBD"),
+        value = "tab_pairwise", br(),
 
         # ── Configuration ─────────────────────────────────────────────────
         tags$div(class="ibd-panel",
@@ -153,8 +161,18 @@ isolation_by_distance_UI <- function(id) {
                 ),
                 numericInput(ns("n_boot_pw"), "Bootstrap per pair (CI):",
                              value = 500, min = 100, max = 5000, step = 100),
-                numericInput(ns("n_perm"), "Mantel permutations:",
-                             value = 9999, min = 99, max = 99999, step = 1000),
+                numericInput(ns("n_boot_loci"), "Bootstrap over loci:",
+                             value = 1000, min = 100, max = 10000, step = 100),
+                selectInput(ns("boot_ci_level"),
+                  label = "Confidence interval level:",
+                  choices = c(
+                    "99.99% (alpha = 0.0001)" = "0.0001",
+                    "99.9%  (alpha = 0.001)"  = "0.001",
+                    "99%    (alpha = 0.01)"   = "0.01",
+                    "95%    (alpha = 0.05)"   = "0.05",
+                    "90%    (alpha = 0.10)"   = "0.10"
+                  ),
+                  selected = "0.05"),
                 tags$hr(),
                 actionButton(
                   ns("run_ibd"), "Run IBD Analysis",
@@ -216,74 +234,55 @@ isolation_by_distance_UI <- function(id) {
         ),
 
         # ── Pairwise tables ────────────────────────────────────────────────
-        fluidRow(
-          column(7,
-            tags$div(class="ibd-panel",
-              tags$div(class="ibd-panel-head",
-                tags$div(class="ibd-panel-title",
-                  icon("table"), " Pairwise F\u209b\u209c-ENA & linearised values")),
-              tags$div(class="ibd-panel-body",
-                DT::DTOutput(ns("fst_table")),
-                br(),
-                uiOutput(ns("ui_dl_fst"))
-              )
-            )
-          ),
-          column(5,
-            tags$div(class="ibd-panel",
-              tags$div(class="ibd-panel-head",
-                tags$div(class="ibd-panel-title",
-                  icon("ruler"), " Pairwise distances (km)")),
-              tags$div(class="ibd-panel-body",
-                DT::DTOutput(ns("dist_table")),
-                br(),
-                uiOutput(ns("ui_dl_dist"))
-              )
-            )
+        tags$div(class="ibd-panel",
+          tags$div(class="ibd-panel-head",
+            tags$div(class="ibd-panel-title",
+              icon("table"), " Pairwise F\u209b\u209c-ENA & linearised values with bootstrap CIs")),
+          tags$div(class="ibd-panel-body",
+            DT::DTOutput(ns("pairwise_table")),
+            br(),
+            uiOutput(ns("ui_dl_pairwise"))
           )
         )
       ),
 
-      # ── TAB 2: Bootstrap Confidence Intervals ──────────────────────────
+      # ── TAB 2: Mantel Test ──────────────────────────────────────────────
       tabPanel(
-        title = tagList(icon("braces"), " Bootstrap CIs"),
-        value = "tab_boot", br(),
+        title = tagList(icon("chart-bar"), " Mantel Test"),
+        value = "tab_mantel", br(),
 
         tags$div(class="ibd-info",
           icon("info-circle"), " ",
-          tags$strong("Bootstrap over loci"), 
-          " \u2014 resample loci with replacement (FreeNA approach) to compute 95% CI ",
-          "for pairwise F<sub>ST</sub>-ENA and linearised values. ",
-          "Chapuis & Estoup (2007) / FreeNA method."
+          tags$strong("Mantel test"), 
+          " \u2014 permutation test for correlation between genetic and geographic distance matrices.",
+          " Tests the null hypothesis of no isolation by distance."
         ),
 
-        # ── Bootstrap parameters ──────────────────────────────────────────
-        tags$div(class="ibd-panel-boot",
-          tags$div(class="ibd-panel-boot-head",
-            tags$div(class="ibd-panel-boot-title",
-              icon("random"), " Bootstrap parameters")),
+        # ── Mantel test inputs ─────────────────────────────────────────────
+        tags$div(class="ibd-panel",
+          tags$div(class="ibd-panel-head",
+            tags$div(class="ibd-panel-title",
+              icon("sliders-h"), " Mantel test parameters")),
           tags$div(class="ibd-panel-body",
             fluidRow(
               column(4,
-                numericInput(ns("n_boot_loci"), "Number of bootstrap replicates:",
-                             value = 1000, min = 100, max = 10000, step = 100)
+                numericInput(ns("n_perm_mantel"), "Number of permutations:",
+                             value = 9999, min = 99, max = 99999, step = 1000)
               ),
               column(4,
-                selectInput(ns("boot_ci_level"),
-                  label = "Confidence interval level:",
+                radioButtons(ns("mantel_model"),
+                  label = "Distance transformation:",
                   choices = c(
-                    "99.99% (alpha = 0.0001)" = "0.0001",
-                    "99.9%  (alpha = 0.001)"  = "0.001",
-                    "99%    (alpha = 0.01)"   = "0.01",
-                    "95%    (alpha = 0.05)"   = "0.05",
-                    "90%    (alpha = 0.10)"   = "0.10"
+                    "2D \u2014 ln(distance)" = "2D",
+                    "1D \u2014 distance"     = "1D"
                   ),
-                  selected = "0.05")
+                  selected = "2D"
+                )
               ),
               column(4,
                 tags$div(style="margin-top:25px;",
                   actionButton(
-                    ns("run_boot"), "Run Bootstrap",
+                    ns("run_mantel"), "Run Mantel Test",
                     icon = icon("play"),
                     class = "ibd-btn-run btn",
                     style = "font-weight:bold;"
@@ -291,59 +290,52 @@ isolation_by_distance_UI <- function(id) {
                 )
               )
             ),
-            uiOutput(ns("ui_boot_status"))
+            uiOutput(ns("ui_mantel_status"))
           )
         ),
 
-        # ── Bootstrap summary boxes ──────────────────────────────────────
-        tags$div(class="ibd-vbox-row",
-          tags$div(class="ibd-vbox",
-            tags$div(class="ibd-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("dna")),
-            tags$div(tags$div(class="ibd-vbox-label","Loci"),
-                     tags$div(class="ibd-vbox-val",uiOutput(ns("boot_n_loci"))))),
-          tags$div(class="ibd-vbox",
-            tags$div(class="ibd-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("repeat")),
-            tags$div(tags$div(class="ibd-vbox-label","Replicates"),
-                     tags$div(class="ibd-vbox-val",uiOutput(ns("boot_n_reps"))))),
-          tags$div(class="ibd-vbox",
-            tags$div(class="ibd-vbox-icon",style="background:#dcfce7;color:#166534;",icon("check-circle")),
-            tags$div(tags$div(class="ibd-vbox-label","Valid pairs"),
-                     tags$div(class="ibd-vbox-val",uiOutput(ns("boot_n_valid")))))
-        ),
-
-        # ── Bootstrap table ──────────────────────────────────────────────
+        # ── Mantel results ─────────────────────────────────────────────────
         tags$div(class="ibd-panel",
           tags$div(class="ibd-panel-head",
             tags$div(class="ibd-panel-title",
-              icon("table"), " Bootstrap CI results")),
+              icon("chart-line"), " Mantel test results")),
           tags$div(class="ibd-panel-body",
-            DT::DTOutput(ns("boot_table")),
+            fluidRow(
+              column(6,
+                tags$div(class="ibd-boot-result", style="font-size:14px;",
+                  tags$p(tags$strong("Correlation coefficient (r):"), 
+                         style="font-size:16px;", id = ns("mantel_r_text")),
+                  tags$p(tags$strong("p-value:"), 
+                         style="font-size:16px;", id = ns("mantel_p_text")),
+                  tags$p(tags$strong("Number of pairs:"), 
+                         style="font-size:16px;", id = ns("mantel_n_text"))
+                )
+              ),
+              column(6,
+                tags$div(class="ibd-boot-result", style="font-size:14px;",
+                  tags$p(tags$strong("Regression slope (b):"), 
+                         style="font-size:16px;", id = ns("mantel_b_text")),
+                  tags$p(tags$strong("Intercept:"), 
+                         style="font-size:16px;", id = ns("mantel_intercept_text")),
+                  tags$p(tags$strong("N\u2093 = 1/b:"), 
+                         style="font-size:16px;", id = ns("mantel_nb_text"))
+                )
+              )
+            ),
             br(),
-            uiOutput(ns("ui_dl_boot"))
+            plotly::plotlyOutput(ns("mantel_plot"), height = "400px")
           )
         ),
 
-        # ── Bootstrap plots ──────────────────────────────────────────────
-        fluidRow(
-          column(6,
-            tags$div(class="ibd-panel",
-              tags$div(class="ibd-panel-head",
-                tags$div(class="ibd-panel-title",
-                  icon("chart-line"), " FST-ENA CI plot")),
-              tags$div(class="ibd-panel-body",
-                plotly::plotlyOutput(ns("boot_fst_plot"), height = "400px")
-              )
-            )
-          ),
-          column(6,
-            tags$div(class="ibd-panel",
-              tags$div(class="ibd-panel-head",
-                tags$div(class="ibd-panel-title",
-                  icon("chart-line"), " FR (linearised) CI plot")),
-              tags$div(class="ibd-panel-body",
-                plotly::plotlyOutput(ns("boot_fr_plot"), height = "400px")
-              )
-            )
+        # ── Mantel permutation histogram ──────────────────────────────────
+        tags$div(class="ibd-panel",
+          tags$div(class="ibd-panel-head",
+            tags$div(class="ibd-panel-title",
+              icon("chart-bar"), " Permutation distribution")),
+          tags$div(class="ibd-panel-body",
+            plotly::plotlyOutput(ns("mantel_hist"), height = "350px"),
+            br(),
+            uiOutput(ns("ui_dl_mantel"))
           )
         )
       )
