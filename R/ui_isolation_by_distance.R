@@ -1,314 +1,353 @@
 # ui_isolation_by_distance.R
-# Two tabs:
-#   1. Pairwise Distances (FreeNA: FST WC84 + Cavalli-Sforza + ENA/INA + bootstrap)
-#   2. Mantel Test (on matrices or rectangular/long format)
+# Isolation by Distance module
+# Rousset (1997) linearised FST/(1-FST) vs geographic distance
+# Based on FreeNA ENA-corrected FST (Chapuis & Estoup 2007)
 
 isolation_by_distance_UI <- function(id) {
   ns <- NS(id)
 
-  fluidPage(
-    tags$head(gs_head()),
+  custom_css <- tags$style(HTML("
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 
-    module_banner(
-      "map-marker-alt",
-      "Isolation by Distance",
-      "FreeNA ENA/INA correction \u00b7 Bootstrap on loci \u00b7 Mantel test",
-      "#2CBF9F"
-    ),
+    .ibd-module * { font-family: 'IBM Plex Sans', sans-serif; }
 
-    tags$div(
-      style = paste(
-        "display:flex; align-items:center; gap:12px;",
-        "background:#FFF8E1; border:2px solid #E1AF00;",
-        "border-radius:6px; padding:10px 16px; margin-bottom:16px;"
-      ),
-      tags$span(style = "font-size:1.8em; line-height:1;", "\U0001f6a7"),
-      tags$div(
-        tags$strong(style = "color:#7B5800;", "Module under construction"),
-        tags$span(style = "color:#7B5800; margin-left:8px; font-size:0.9em;",
-          "Results are functional but the module is still being validated. Use with caution.")
+    .ibd-header {
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 55%, #0c4a6e 100%);
+      border-radius: 10px; padding: 1.2rem 1.6rem; margin-bottom: 1rem;
+      position: relative; overflow: hidden;
+    }
+    .ibd-header::before {
+      content: ''; position: absolute; inset: 0;
+      background: repeating-linear-gradient(
+        -45deg, transparent, transparent 28px,
+        rgba(255,255,255,.018) 28px, rgba(255,255,255,.018) 29px);
+    }
+    .ibd-header-title { font-size:1.05rem; font-weight:600; color:#f1f5f9; letter-spacing:.01em; margin-bottom:.2rem; }
+    .ibd-header-sub   { font-size:.75rem; color:#94a3b8; font-family:'IBM Plex Mono',monospace; }
+    .ibd-badges { display:flex; gap:6px; margin-top:.5rem; flex-wrap:wrap; }
+    .ibd-badge  { display:inline-block; border-radius:20px; padding:2px 10px; font-size:.67rem; font-family:'IBM Plex Mono',monospace; }
+    .ibd-badge-teal   { background:rgba(20,184,166,.15);  border:1px solid rgba(20,184,166,.3);  color:#2dd4bf; }
+    .ibd-badge-blue   { background:rgba(56,189,248,.15);  border:1px solid rgba(56,189,248,.3);  color:#38bdf8; }
+    .ibd-badge-amber  { background:rgba(251,191,36,.12);  border:1px solid rgba(251,191,36,.3);  color:#fbbf24; }
+    .ibd-badge-purple { background:rgba(192,132,252,.12); border:1px solid rgba(192,132,252,.3); color:#c084fc; }
+    .ibd-badge-pink   { background:rgba(244,114,182,.12); border:1px solid rgba(244,114,182,.3); color:#f472b6; }
+
+    .ibd-vbox-row { display:flex; gap:9px; margin-bottom:1rem; flex-wrap:wrap; }
+    .ibd-vbox { flex:1; min-width:110px; background:#fff; border:1px solid #e2e8f0; border-radius:9px; padding:.6rem .85rem; display:flex; align-items:center; gap:9px; }
+    .ibd-vbox-icon  { width:30px; height:30px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:12px; flex-shrink:0; }
+    .ibd-vbox-label { font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:.06em; margin-bottom:1px; }
+    .ibd-vbox-val   { font-size:18px; font-weight:600; color:#0f172a; line-height:1.1; font-family:'IBM Plex Mono',monospace; }
+
+    .ibd-panel { background:#fff; border:1px solid #e2e8f0; border-radius:9px; margin-bottom:.85rem; overflow:hidden; }
+    .ibd-panel-head { background:#f8fafc; border-bottom:1px solid #e2e8f0; padding:.55rem .9rem; }
+    .ibd-panel-title { font-size:12px; font-weight:600; color:#1e293b; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .ibd-panel-body { padding:.85rem; }
+
+    .ibd-info { background:#eff6ff; border:1px solid #bfdbfe; border-radius:7px; padding:.45rem .8rem; font-size:11.5px; color:#1d4ed8; margin-bottom:.85rem; line-height:1.65; }
+    .ibd-warn { background:#fffbeb; border:1px solid #fcd34d; border-radius:7px; padding:.45rem .8rem; font-size:11.5px; color:#92400e; margin-bottom:.85rem; line-height:1.65; }
+
+    .ibd-btn-run {
+      background:linear-gradient(135deg,#0369a1,#0c4a6e) !important;
+      border:none !important; color:#fff !important; border-radius:7px !important;
+      font-weight:600 !important; font-size:13px !important; padding:7px 22px !important;
+      box-shadow:0 2px 8px rgba(3,105,161,.3) !important;
+    }
+    .ibd-btn-run:hover { opacity:.9; }
+
+    .ibd-panel-boot { background:#faf5ff; border:1px solid #e9d5ff; border-radius:9px; margin-bottom:.85rem; overflow:hidden; }
+    .ibd-panel-boot-head { background:#f3e8ff; border-bottom:1px solid #e9d5ff; padding:.55rem .9rem; }
+    .ibd-panel-boot-title { font-size:12px; font-weight:600; color:#4c1d95; display:flex; align-items:center; gap:6px; }
+
+    .ibd-boot-result {
+      background:#faf5ff; border:1px solid #d8b4fe; border-radius:8px;
+      padding:.65rem 1rem; font-size:11.5px; color:#3b0764;
+      font-family:'IBM Plex Mono',monospace; line-height:1.9;
+      margin-top:.75rem;
+    }
+
+    .ibd-dl-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:.5rem; }
+    .ibd-dl-row .btn { font-size:11px; padding:3px 12px; }
+
+    .ibd-module .dataTables_wrapper { font-size:12px; }
+    .ibd-module table.dataTable thead th {
+      background:#f8fafc !important; color:#475569 !important;
+      font-family:'IBM Plex Mono',monospace !important;
+      font-size:10.5px !important; font-weight:600 !important;
+    }
+    .ibd-module table.dataTable tbody td {
+      font-family:'IBM Plex Mono',monospace !important;
+      font-size:11px !important; color:#1e293b !important;
+    }
+    .ibd-module .nav-tabs > li > a { font-size:12px; font-weight:500; color:#475569; padding:5px 13px; }
+    .ibd-module .nav-tabs > li.active > a { color:#0f172a; font-weight:600; }
+  "))
+
+  tags$div(class="ibd-module", custom_css,
+
+    # ── Header ─────────────────────────────────────────────────────────────
+    tags$div(class="ibd-header",
+      tags$div(class="ibd-header-title",
+        icon("map-marker-alt"), " Isolation by Distance \u00b7 Rousset (1997)"),
+      tags$div(class="ibd-header-sub",
+        "Linearised F\u209b\u209c/(1\u2212F\u209b\u209c) vs geographic distance \u00b7 Mantel test ",
+        "\u00b7 FreeNA ENA-corrected FST \u2014 Chapuis & Estoup (2007)"),
+      tags$div(class="ibd-badges",
+        tags$span(class="ibd-badge ibd-badge-teal",   "F\u209b\u209c-ENA \u2014 FreeNA correction"),
+        tags$span(class="ibd-badge ibd-badge-blue",   "Mantel test \u2014 permutation"),
+        tags$span(class="ibd-badge ibd-badge-amber",  "1D \u2014 distance km"),
+        tags$span(class="ibd-badge ibd-badge-purple", "2D \u2014 ln(distance)"),
+        tags$span(class="ibd-badge ibd-badge-pink",   "N\u2093 = 1/b")
       )
     ),
 
-    tabsetPanel(
-      id = ns("main_tabs"),
-      type = "tabs",
+    # ── Value boxes ─────────────────────────────────────────────────────────
+    tags$div(class="ibd-vbox-row",
+      tags$div(class="ibd-vbox",
+        tags$div(class="ibd-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("map-marker-alt")),
+        tags$div(tags$div(class="ibd-vbox-label","Populations"),
+                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_pops"))))),
+      tags$div(class="ibd-vbox",
+        tags$div(class="ibd-vbox-icon",style="background:#dcfce7;color:#166534;",icon("project-diagram")),
+        tags$div(tags$div(class="ibd-vbox-label","Pairs"),
+                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_pairs"))))),
+      tags$div(class="ibd-vbox",
+        tags$div(class="ibd-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("chart-line")),
+        tags$div(tags$div(class="ibd-vbox-label","Mantel r"),
+                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_mantel_r"))))),
+      tags$div(class="ibd-vbox",
+        tags$div(class="ibd-vbox-icon",style="background:#fef9c3;color:#854d0e;",icon("check-circle")),
+        tags$div(tags$div(class="ibd-vbox-label","p-value"),
+                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_pval"))))),
+      tags$div(class="ibd-vbox",
+        tags$div(class="ibd-vbox-icon",style="background:#ccfbf1;color:#0d9488;",icon("ruler")),
+        tags$div(tags$div(class="ibd-vbox-label","N\u2093 (avg)"),
+                 tags$div(class="ibd-vbox-val",uiOutput(ns("vb_nb")))))
+    ),
 
-      # ══════════════════════════════════════════════════════════════════════
-      # TAB 1: Pairwise Distances (FreeNA)
-      # ══════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════════
+    # TABS
+    # ════════════════════════════════════════════════════════════════════════
+    tabsetPanel(id = ns("ibd_tabs"), type = "tabs",
+
+      # ── TAB 1: IBD Analysis ──────────────────────────────────────────────
       tabPanel(
-        title = "Pairwise Distances",
-        icon = icon("project-diagram"),
-        tags$div(
-          class = "spg-method-note", style = "border-left-color:#2CBF9F;",
-          HTML(paste0(
-            "Computes pairwise F<sub>ST</sub> (Weir & Cockerham 1984) and Cavalli-Sforza & Edwards (1967) distances ",
-            "between populations. Null allele frequencies are estimated with the EM algorithm of ",
-            "Dempster, Laird & Rubin (1977). The <b>ENA correction</b> (Chapuis & Estoup 2007) is applied ",
-            "to F<sub>ST</sub>; the <b>INA correction</b> to Cavalli-Sforza distances. ",
-            "Bootstrap resampling over <b>loci</b> provides 95% confidence intervals. ",
-            "<b>Requires genotype data with population assignments (imported into DuckDB).</b><br><br>",
-            "<b>References:</b> Chapuis & Estoup 2007 <em>Mol Ecol Notes</em> 7:221\u2013231 \u00b7 ",
-            "Dempster et al. 1977 <em>J R Stat Soc B</em> 39:1\u201338 \u00b7 ",
-            "Weir & Cockerham 1984 <em>Evolution</em> 38:1358\u20131370"
-          ))
-        ),
+        title = tagList(icon("chart-line"), " IBD Analysis"),
+        value = "tab_ibd", br(),
 
-        # Configuration
-        fluidRow(
-          box(
-            width = 12,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("sliders-h"), " FreeNA parameters"
-            ),
-            solidHeader = TRUE, status = "primary",
+        # ── Configuration ─────────────────────────────────────────────────
+        tags$div(class="ibd-panel",
+          tags$div(class="ibd-panel-head",
+            tags$div(class="ibd-panel-title",
+              icon("sliders-h"), " IBD parameters")),
+          tags$div(class="ibd-panel-body",
             fluidRow(
               column(3,
-                numericInput(ns("n_boot_loci"), "Bootstrap replicates (loci):",
-                             value = 1000, min = 100, max = 10000, step = 100),
-                checkboxInput(ns("calc_fst"),  "Compute FST (WC84)", value = TRUE),
-                checkboxInput(ns("ena_corr"),  "Apply ENA correction (FST)", value = TRUE),
-                checkboxInput(ns("calc_cs"),   "Compute Cavalli-Sforza distance", value = TRUE),
-                checkboxInput(ns("ina_corr"),  "Apply INA correction (CS)", value = TRUE),
-                tags$hr(),
-                actionButton(
-                  ns("run_freena"), "Run FreeNA Analysis",
-                  icon  = icon("calculator"),
-                  class = "btn-action-primary btn-block",
-                  style = "font-weight:bold;"
-                )
-              ),
-              column(9,
-                h4(icon("chart-bar"), "Summary",
-                   style = "font-weight:600; color:#2c3e50; margin-bottom:15px;"),
-                fluidRow(
-                  column(3, valueBoxOutput(ns("box_ninds"),    width = NULL)),
-                  column(3, valueBoxOutput(ns("box_npops"),    width = NULL)),
-                  column(3, valueBoxOutput(ns("box_nloci"),    width = NULL)),
-                  column(3, valueBoxOutput(ns("box_npairs"),   width = NULL))
-                ),
-                tags$h5("Null allele frequencies (EM Dempster)",
-                        style = "font-weight:600; margin-top:14px; color:#2c3e50;"),
-                DT::DTOutput(ns("rd_table"))
-              )
-            )
-          )
-        ),
-
-        # Pairwise matrices
-        fluidRow(
-          column(6,
-            box(
-              width = 12,
-              title = div(
-                style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-                icon("th"), " Pairwise FST matrix"
-              ),
-              solidHeader = FALSE,
-              radioButtons(ns("fst_matrix_choice"), "Which FST:",
-                           choices = c("Uncorrected" = "fst", "ENA-corrected" = "fst_ena"),
-                           selected = "fst_ena", inline = TRUE),
-              DT::DTOutput(ns("fst_matrix_table"))
-            )
-          ),
-          column(6,
-            box(
-              width = 12,
-              title = div(
-                style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-                icon("th"), " Cavalli-Sforza distance matrix"
-              ),
-              solidHeader = FALSE,
-              radioButtons(ns("cs_matrix_choice"), "Which CS:",
-                           choices = c("Uncorrected" = "cs", "INA-corrected" = "cs_ina"),
-                           selected = "cs_ina", inline = TRUE),
-              DT::DTOutput(ns("cs_matrix_table"))
-            )
-          )
-        ),
-
-        # Detailed pairwise table with CI
-        fluidRow(
-          box(
-            width = 12,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("list"), " Detailed pairwise results with 95% bootstrap CI"
-            ),
-            solidHeader = FALSE,
-            DT::DTOutput(ns("pairwise_detail_table")),
-            tags$br(),
-            fluidRow(
-              column(6, downloadButton(ns("dl_pairwise_csv"), "Download pairwise table (CSV)",
-                                       class = "btn-action-secondary btn-sm btn-block")),
-              column(6, downloadButton(ns("dl_freena_log"),   "Download FreeNA log (TXT)",
-                                       class = "btn-action-secondary btn-sm btn-block"))
-            )
-          )
-        )
-      ),
-
-      # ══════════════════════════════════════════════════════════════════════
-      # TAB 2: Mantel Test
-      # ══════════════════════════════════════════════════════════════════════
-      tabPanel(
-        title = "Mantel Test",
-        icon = icon("chart-line"),
-        tags$div(
-          class = "spg-method-note", style = "border-left-color:#2CBF9F;",
-          HTML(paste0(
-            "Mantel test (Mantel 1967) assesses the correlation between two distance matrices. ",
-            "Significance is tested by random permutation of rows/columns of one matrix. ",
-            "Supports <b>square matrices</b> or <b>rectangular (column-wise)</b> format as in Fstat/RT: ",
-            "first row = population pairs, subsequent rows = distance values (e.g., from different loci or measures). ",
-            "For IBD, one matrix is genetic (computed in Tab 1 or uploaded), the other is geographic ",
-            "(from GPS coordinates or uploaded).<br><br>",
-            "<b>Reference:</b> Mantel N. 1967. <em>Math Geol</em> 15:65\u201375."
-          ))
-        ),
-
-        fluidRow(
-          box(
-            width = 12,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("sliders-h"), " Mantel test parameters"
-            ),
-            solidHeader = TRUE, status = "primary",
-            fluidRow(
-              column(3,
-                # --- Matrix 1 (Genetic) ---
-                h5(tags$strong("Matrix 1 (genetic)")),
                 radioButtons(
-                  ns("mat1_source"),
-                  "Source:",
+                  ns("model"),
+                  "Habitat model:",
                   choices = c(
-                    "From Tab 1 (FST)"     = "tab1_fst",
-                    "From Tab 1 (CS dist)" = "tab1_cs",
-                    "Upload file"          = "upload1"
+                    "2D \u2014 ln(distance km)" = "2D",
+                    "1D \u2014 distance km"     = "1D"
                   ),
-                  selected = "tab1_fst"
+                  selected = "2D"
                 ),
-                conditionalPanel(
-                  condition = "input.mat1_source == 'tab1_fst'", ns = ns,
-                  radioButtons(ns("mat1_fst_choice"), NULL,
-                               choices = c("Uncorrected" = "fst", "ENA-corrected" = "fst_ena"),
-                               selected = "fst_ena", inline = TRUE)
-                ),
-                conditionalPanel(
-                  condition = "input.mat1_source == 'tab1_cs'", ns = ns,
-                  radioButtons(ns("mat1_cs_choice"), NULL,
-                               choices = c("Uncorrected" = "cs", "INA-corrected" = "cs_ina"),
-                               selected = "cs_ina", inline = TRUE)
-                ),
-                conditionalPanel(
-                  condition = "input.mat1_source == 'upload1'", ns = ns,
-                  fileInput(ns("file_mat1"), "Distance file (CSV):",
-                            accept = c(".csv", ".txt", ".tab")),
-                  radioButtons(ns("mat1_format"), "Format:",
-                               choices = c("Square matrix" = "square",
-                                          "Rectangular (column-wise)" = "rectangular"),
-                               selected = "square")
-                ),
-
-                tags$hr(),
-
-                # --- Matrix 2 (Geographic) ---
-                h5(tags$strong("Matrix 2 (geographic)")),
-                radioButtons(
-                  ns("mat2_source"),
-                  "Source:",
-                  choices = c(
-                    "From GPS coordinates" = "gps",
-                    "Upload file"          = "upload2"
-                  ),
-                  selected = "gps"
-                ),
-                conditionalPanel(
-                  condition = "input.mat2_source == 'upload2'", ns = ns,
-                  fileInput(ns("file_mat2"), "Distance file (CSV):",
-                            accept = c(".csv", ".txt", ".tab")),
-                  radioButtons(ns("mat2_format"), "Format:",
-                               choices = c("Square matrix" = "square",
-                                          "Rectangular (column-wise)" = "rectangular"),
-                               selected = "square")
-                ),
-                conditionalPanel(
-                  condition = "input.mat2_source == 'gps'", ns = ns,
-                  checkboxInput(ns("use_log_dist"), "Use ln(distance)", value = TRUE)
-                ),
-
-                tags$hr(),
-                numericInput(ns("n_perm_mantel"), "Permutations:",
+                numericInput(ns("n_boot_pw"), "Bootstrap per pair (CI):",
+                             value = 500, min = 100, max = 5000, step = 100),
+                numericInput(ns("n_perm"), "Mantel permutations:",
                              value = 9999, min = 99, max = 99999, step = 1000),
-                selectInput(ns("mantel_method"), "Correlation:",
-                            choices = c("Pearson" = "pearson",
-                                       "Spearman" = "spearman"),
-                            selected = "pearson"),
                 tags$hr(),
                 actionButton(
-                  ns("run_mantel"), "Run Mantel Test",
-                  icon  = icon("play"),
-                  class = "btn-action-primary btn-block",
-                  style = "font-weight:bold;"
-                )
-              ),
-
-              column(9,
-                h4(icon("chart-bar"), "Mantel test results",
-                   style = "font-weight:600; color:#2c3e50; margin-bottom:15px;"),
-                fluidRow(
-                  column(4, valueBoxOutput(ns("box_mantel_r"), width = NULL)),
-                  column(4, valueBoxOutput(ns("box_mantel_p"), width = NULL)),
-                  column(4, valueBoxOutput(ns("box_mantel_n"), width = NULL))
+                  ns("run_ibd"), "Run IBD Analysis",
+                  icon  = icon("rocket"),
+                  class = "ibd-btn-run btn",
+                  style = "font-weight:bold; width:100%;"
                 ),
-                verbatimTextOutput(ns("mantel_summary"))
+                br(), br(),
+                uiOutput(ns("ui_run_status"))
+              ),
+              column(9,
+                tags$h5("Regression parameters",
+                        style = "font-weight:600; margin-top:0; color:#2c3e50;"),
+                DT::DTOutput(ns("reg_table"))
               )
             )
           )
         ),
 
-        # Mantel plot + Interpretation
+        # ── IBD plot ───────────────────────────────────────────────────────
         fluidRow(
-          box(
-            width = 8,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("chart-scatter"), " Mantel scatter plot"
-            ),
-            solidHeader = FALSE,
-            plotly::plotlyOutput(ns("mantel_plot"), height = "500px")
+          column(8,
+            tags$div(class="ibd-panel",
+              tags$div(class="ibd-panel-head",
+                tags$div(class="ibd-panel-title",
+                  icon("chart-line"), " IBD plot \u2014 three regression lines")),
+              tags$div(class="ibd-panel-body",
+                plotly::plotlyOutput(ns("ibd_plot"), height = "460px")
+              )
+            )
           ),
-          box(
-            width = 4,
-            title = div(
-              style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-              icon("info-circle"), " Interpretation"
-            ),
-            solidHeader = FALSE,
-            tags$div(
-              style = "font-size:13px; line-height:1.8;",
-              tags$p(tags$strong("Mantel r:"), " Pearson/Spearman correlation between corresponding ",
-                     "entries of the two distance matrices."),
-              tags$p(tags$strong("P-value:"), " Proportion of permuted correlations \u2265 observed r (one-sided)."),
-              tags$p(tags$strong("Significance:"), " p < 0.05 \u2192 significant correlation (e.g. IBD)."),
-              tags$hr(),
-              tags$p(tags$strong("File formats accepted:")),
-              tags$ul(
-                style = "font-size:12px; padding-left:16px; line-height:1.9;",
-                tags$li(tags$em("Square matrix:"), " N\u00d7N symmetric matrix with population labels as row/col names"),
-                tags$li(tags$em("Rectangular:"), " First row = pair labels (e.g. 'Pop1-Pop2'), columns = distances. ",
-                        "Values are averaged over rows to obtain a single distance per pair.")
+          column(4,
+            tags$div(class="ibd-panel",
+              tags$div(class="ibd-panel-head",
+                tags$div(class="ibd-panel-title",
+                  icon("info-circle"), " Interpretation")),
+              tags$div(class="ibd-panel-body", style="font-size:12px; line-height:1.8;",
+                tags$p(tags$strong("Three regression lines"), style="margin-bottom:4px;"),
+                tags$ul(style="padding-left:16px; line-height:1.9;",
+                  tags$li(tags$span(style="color:#333a43; font-weight:600;", "Average"), 
+                          " \u2014 through point estimates"),
+                  tags$li(tags$span(style="color:#B40F20; font-weight:600;", "Upper CI (ls)"), 
+                          " \u2014 through upper 95% CI bounds"),
+                  tags$li(tags$span(style="color:#3B9AB2; font-weight:600;", "Lower CI (li)"), 
+                          " \u2014 through lower 95% CI bounds")
+                ),
+                tags$p(tags$strong("Slope b"), 
+                       " \u2014 in 2D model: b = 1/N",tags$sub("b")),
+                tags$p(tags$strong("N",tags$sub("b")," = 1/b"), 
+                       " \u2014 neighbourhood size"),
+                tags$p(tags$strong("N",tags$sub("em")," = 1/(2\u03c0b)"), 
+                       " \u2014 effective migrants"),
+                tags$hr(style="margin:6px 0;"),
+                tags$p(style="color:#777; font-size:10.5px;",
+                  "Rousset (1997) Genetics 145:1219. de Mee\u00fbs (2006).")
+              )
+            )
+          )
+        ),
+
+        # ── Pairwise tables ────────────────────────────────────────────────
+        fluidRow(
+          column(7,
+            tags$div(class="ibd-panel",
+              tags$div(class="ibd-panel-head",
+                tags$div(class="ibd-panel-title",
+                  icon("table"), " Pairwise F\u209b\u209c-ENA & linearised values")),
+              tags$div(class="ibd-panel-body",
+                DT::DTOutput(ns("fst_table")),
+                br(),
+                uiOutput(ns("ui_dl_fst"))
+              )
+            )
+          ),
+          column(5,
+            tags$div(class="ibd-panel",
+              tags$div(class="ibd-panel-head",
+                tags$div(class="ibd-panel-title",
+                  icon("ruler"), " Pairwise distances (km)")),
+              tags$div(class="ibd-panel-body",
+                DT::DTOutput(ns("dist_table")),
+                br(),
+                uiOutput(ns("ui_dl_dist"))
+              )
+            )
+          )
+        )
+      ),
+
+      # ── TAB 2: Bootstrap Confidence Intervals ──────────────────────────
+      tabPanel(
+        title = tagList(icon("braces"), " Bootstrap CIs"),
+        value = "tab_boot", br(),
+
+        tags$div(class="ibd-info",
+          icon("info-circle"), " ",
+          tags$strong("Bootstrap over loci"), 
+          " \u2014 resample loci with replacement (FreeNA approach) to compute 95% CI ",
+          "for pairwise F<sub>ST</sub>-ENA and linearised values. ",
+          "Chapuis & Estoup (2007) / FreeNA method."
+        ),
+
+        # ── Bootstrap parameters ──────────────────────────────────────────
+        tags$div(class="ibd-panel-boot",
+          tags$div(class="ibd-panel-boot-head",
+            tags$div(class="ibd-panel-boot-title",
+              icon("random"), " Bootstrap parameters")),
+          tags$div(class="ibd-panel-body",
+            fluidRow(
+              column(4,
+                numericInput(ns("n_boot_loci"), "Number of bootstrap replicates:",
+                             value = 1000, min = 100, max = 10000, step = 100)
               ),
-              tags$hr(),
-              tags$p(style = "color:#777; font-size:12px;",
-                "Mantel N. 1967. Math Geol 15:65-75.")
+              column(4,
+                selectInput(ns("boot_ci_level"),
+                  label = "Confidence interval level:",
+                  choices = c(
+                    "99.99% (alpha = 0.0001)" = "0.0001",
+                    "99.9%  (alpha = 0.001)"  = "0.001",
+                    "99%    (alpha = 0.01)"   = "0.01",
+                    "95%    (alpha = 0.05)"   = "0.05",
+                    "90%    (alpha = 0.10)"   = "0.10"
+                  ),
+                  selected = "0.05")
+              ),
+              column(4,
+                tags$div(style="margin-top:25px;",
+                  actionButton(
+                    ns("run_boot"), "Run Bootstrap",
+                    icon = icon("play"),
+                    class = "ibd-btn-run btn",
+                    style = "font-weight:bold;"
+                  )
+                )
+              )
+            ),
+            uiOutput(ns("ui_boot_status"))
+          )
+        ),
+
+        # ── Bootstrap summary boxes ──────────────────────────────────────
+        tags$div(class="ibd-vbox-row",
+          tags$div(class="ibd-vbox",
+            tags$div(class="ibd-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("dna")),
+            tags$div(tags$div(class="ibd-vbox-label","Loci"),
+                     tags$div(class="ibd-vbox-val",uiOutput(ns("boot_n_loci"))))),
+          tags$div(class="ibd-vbox",
+            tags$div(class="ibd-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("repeat")),
+            tags$div(tags$div(class="ibd-vbox-label","Replicates"),
+                     tags$div(class="ibd-vbox-val",uiOutput(ns("boot_n_reps"))))),
+          tags$div(class="ibd-vbox",
+            tags$div(class="ibd-vbox-icon",style="background:#dcfce7;color:#166534;",icon("check-circle")),
+            tags$div(tags$div(class="ibd-vbox-label","Valid pairs"),
+                     tags$div(class="ibd-vbox-val",uiOutput(ns("boot_n_valid")))))
+        ),
+
+        # ── Bootstrap table ──────────────────────────────────────────────
+        tags$div(class="ibd-panel",
+          tags$div(class="ibd-panel-head",
+            tags$div(class="ibd-panel-title",
+              icon("table"), " Bootstrap CI results")),
+          tags$div(class="ibd-panel-body",
+            DT::DTOutput(ns("boot_table")),
+            br(),
+            uiOutput(ns("ui_dl_boot"))
+          )
+        ),
+
+        # ── Bootstrap plots ──────────────────────────────────────────────
+        fluidRow(
+          column(6,
+            tags$div(class="ibd-panel",
+              tags$div(class="ibd-panel-head",
+                tags$div(class="ibd-panel-title",
+                  icon("chart-line"), " FST-ENA CI plot")),
+              tags$div(class="ibd-panel-body",
+                plotly::plotlyOutput(ns("boot_fst_plot"), height = "400px")
+              )
+            )
+          ),
+          column(6,
+            tags$div(class="ibd-panel",
+              tags$div(class="ibd-panel-head",
+                tags$div(class="ibd-panel-title",
+                  icon("chart-line"), " FR (linearised) CI plot")),
+              tags$div(class="ibd-panel-body",
+                plotly::plotlyOutput(ns("boot_fr_plot"), height = "400px")
+              )
             )
           )
         )
       )
-    )
-  )
+
+    ) # end tabsetPanel
+  )   # end tags$div.ibd-module
 }
