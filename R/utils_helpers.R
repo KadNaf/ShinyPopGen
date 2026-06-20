@@ -2404,3 +2404,426 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
   stopCluster(cl)
   return(do.call(c, results))
 }
+
+
+# engine_freena.R
+# Faithful R translation of FreeNA_optm2R.pas
+#
+# Matches the Pascal reference exactly on:
+#   - EM null-allele frequency estimation (Dempster, Laird & Rubin 1977 / FreeNA)
+#   - WC84 Fst (Weir 1996 / Genepop method), raw and ENA-corrected
+#     -> per-locus nc is baked into s2P, then RE-MULTIPLIED by nc again when
+#        aggregating across loci (the Pascal sum_stats / final_stats double
+#        weighting) for BOTH global and pairwise Fst.
+#   - Cavalli-Sforza & Edwards (1967) chord distance, raw and INA-corrected
+#     (INA = append rd as an extra allele category, NOT renormalised).
+#   - Bootstrap over loci using ONE SHARED resampled-loci index sequence per
+#     replicate, applied simultaneously to every statistic (this differs from
+#     resampling independently per pair/per statistic).
+#
+# Documented deviation from the Pascal source: a genotype carrying exactly one
+# null-coded allele (heterozygous for the null state) is biologically
+# unobservable and the Pascal program flags it as a data error (and would
+# hang on ReadLn in an interactive run). Here it is instead treated as a
+# missing genotype at that locus for that individual.
+
+# ============================================================
+# 1. Genotype parsing
+# ============================================================
+
+# Parse all genotypes for one (locus, population) combination.
+# gt_vec   : character vector of genotypes, e.g. "101/103", "999999/999999"
+# null_code: character, e.g. "999999"
+# miss_set : codes treated as missing alleles (besides blank/NA)
+.fr_parse_locus_pop <- function(gt_vec, null_code, miss_set = c("0", "000", "0000", "000000")) {
+  gt <- as.character(gt_vec)
+  n_absent <- 0L; n_nullhomo <- 0L; n_nullhet <- 0L
+  a1v <- character(0L); a2v <- character(0L)
+
+  for (g in gt) {
+    g <- trimws(g)
+    if (is.na(g) || g == "" || g == "NA") { n_absent <- n_absent + 1L; next }
+
+    al <- if (grepl("/", g, fixed = TRUE)) strsplit(g, "/", fixed = TRUE)[[1L]]
+          else if (grepl("-", g, fixed = TRUE)) strsplit(g, "-", fixed = TRUE)[[1L]]
+          else c(g, g)
+    a1 <- trimws(al[1L]); a2 <- trimws(al[2L])
+
+    miss1 <- a1 %in% c(miss_set, "", "NA")
+    miss2 <- a2 %in% c(miss_set, "", "NA")
+    if (miss1 || miss2) { n_absent <- n_absent + 1L; next }   # full or partial missing
+
+    null1 <- identical(a1, null_code); null2 <- identical(a2, null_code)
+    if (null1 && null2) { n_nullhomo <- n_nullhomo + 1L; next }
+    if (null1 || null2) { n_nullhet  <- n_nullhet  + 1L; next }  # deviation: treated as absent
+
+    a1v <- c(a1v, a1); a2v <- c(a2v, a2)
+  }
+
+  n_valid <- length(a1v)
+  alleles <- sort(unique(c(a1v, a2v)))
+  A <- length(alleles)
+  H_ii <- stats::setNames(integer(A), alleles)
+  H_iX <- stats::setNames(integer(A), alleles)
+  cnt  <- stats::setNames(integer(A), alleles)
+
+  for (k in seq_len(n_valid)) {
+    x <- a1v[k]; y <- a2v[k]
+    cnt[x] <- cnt[x] + 1L; cnt[y] <- cnt[y] + 1L
+    if (x == y) H_ii[x] <- H_ii[x] + 1L
+    else { H_iX[x] <- H_iX[x] + 1L; H_iX[y] <- H_iX[y] + 1L }
+  }
+
+  list(n_absent = n_absent, n_nullhomo = n_nullhomo, n_nullhet = n_nullhet,
+       n_valid = n_valid, alleles = alleles, cnt = cnt, H_ii = H_ii, H_iX = H_iX)
+}
+
+# ============================================================
+# 2. EM null-allele estimation (Dempster, Laird & Rubin 1977 / FreeNA)
+#    — faithful to rDempster_per_locus, including the corrected cpt=0 formula
+# ============================================================
+
+# parsed : output of .fr_parse_locus_pop()
+# efpop  : total individuals assigned to this population (constant across loci)
+.fr_em_null <- function(parsed, efpop, tol = 1e-6, max_iter = 10000L) {
+  n_absent_eff <- parsed$n_absent + parsed$n_nullhet   # nullhet folded into "absent"
+  N <- efpop - n_absent_eff                             # Pascal: efpop - absentgeno
+  nnullhomo <- parsed$n_nullhomo
+  alleles <- parsed$alleles
+  A <- length(alleles)
+
+  empty <- list(rd = 0.0, cq = stats::setNames(numeric(0), character(0)),
+                N = N, alleles = character(0),
+                genefreq = stats::setNames(numeric(0), character(0)),
+                H_ii = parsed$H_ii, H_iX = parsed$H_iX,
+                n_valid = 0L, nnullhomo = nnullhomo, notappl = TRUE)
+
+  if (N <= 0L || A == 0L) return(empty)
+
+  n_valid <- N - nnullhomo
+  genefreq <- if (n_valid > 0L) parsed$cnt / (2 * n_valid)
+              else stats::setNames(rep(0, A), alleles)
+
+  # rd initialisation (Pascal: nnullhomo>0 -> sqrt(nnullhomo/N); else sqrt(1/(N+1)))
+  rd <- if (nnullhomo > 0L) sqrt(nnullhomo / N) else sqrt(1 / (N + 1))
+
+  # cpt = 0 initialisation of corrdgenefreq
+  # Faithful simplification using hotot == ii (see Pascal source: hotot is
+  # reset to 0 then immediately set to ii within the SAME allele iteration,
+  # so "hotot - ii" cancels to 0 in both branches of the original formula):
+  #   nnullhomo>0 : X = N - ii - jj,      Y = N
+  #   nnullhomo=0 : X = 1 + N - ii - jj,  Y = N + 1
+  cq <- stats::setNames(numeric(A), alleles)
+  for (k in seq_len(A)) {
+    a <- alleles[k]
+    if (genefreq[a] <= 0) { cq[k] <- 0; next }
+    ii <- parsed$H_ii[a]; jj <- parsed$H_iX[a]
+    if (nnullhomo > 0L) { Xv <- N - ii - jj;     Yv <- N }
+    else                { Xv <- 1 + N - ii - jj; Yv <- N + 1 }
+    cq[k] <- 1 - sqrt(max(0, Xv / Yv))
+  }
+
+  # EM iterations
+  for (iter in seq_len(max_iter)) {
+    cq_old <- cq
+    rdi <- 0.0
+    re  <- 0L
+    for (k in seq_len(A)) {
+      a <- alleles[k]
+      if (genefreq[a] <= 0) next
+      ii <- parsed$H_ii[a]; jj <- parsed$H_iX[a]
+      p_old <- cq_old[k]
+      denom <- p_old + 2 * rd
+      if (denom <= 0) next
+      p_new <- (p_old + rd) / denom * (ii / N) + jj / (2 * N)
+      rdi   <- rdi + (rd / denom) * (ii / N)
+      cq[k] <- p_new
+      if (abs(p_new - p_old) > tol) re <- re + 1L
+    }
+    rd_new <- rdi + nnullhomo / N
+    if (abs(rd_new - rd) > tol) re <- re + 1L
+    rd <- rd_new
+    if (re == 0L) break
+  }
+
+  list(rd = rd, cq = cq, N = N, alleles = alleles, genefreq = genefreq,
+       H_ii = parsed$H_ii, H_iX = parsed$H_iX,
+       n_valid = n_valid, nnullhomo = nnullhomo, notappl = FALSE)
+}
+
+# ============================================================
+# 3. WC84 Fst components for K populations at ONE locus
+#    (K = npop for global Fst, K = 2 for pairwise Fst)
+# ============================================================
+
+# pop_data: list of length K, each list(ni=<numeric>, nA=<named vector>, AA=<named vector>)
+#   RAW : ni = n_valid (excludes null homozygotes); nA = cnt (raw allele counts);
+#         AA = H_ii (raw homozygote counts)
+#   ENA : ni = N (includes null homozygotes, excludes only missing); nA = cq*2*N;
+#         AA = cAA (corrected homozygote counts, see .fr_build_ena_popdata)
+# alleles : character vector of all alleles to sum over (union across pops)
+.fr_wc84_components <- function(pop_data, alleles) {
+  ni_vec  <- vapply(pop_data, function(p) p$ni, numeric(1))
+  ntot    <- sum(ni_vec)
+  ntot2   <- sum(ni_vec^2)
+  npopeff <- sum(ni_vec > 0)
+
+  if (ntot <= 0 || npopeff < 2)
+    return(list(s1 = 0, s3 = 0, nc = 0))
+
+  nc <- (ntot - ntot2 / ntot) / (npopeff - 1)
+  if (!(ntot > 0 && (ntot - npopeff) > 0 && nc > 0))
+    return(list(s1 = 0, s3 = 0, nc = 0))
+
+  s1 <- 0; s3 <- 0
+  for (a in alleles) {
+    snA <- 0; sAA <- 0; s2A <- 0
+    for (p in pop_data) {
+      ni <- p$ni; nn <- 2 * ni
+      nA <- if (a %in% names(p$nA)) p$nA[[a]] else 0
+      AA <- if (a %in% names(p$AA)) p$AA[[a]] else 0
+      snA <- snA + nA
+      sAA <- sAA + AA
+      if (ni > 0) s2A <- s2A + nA^2 / nn
+    }
+    MSG <- (0.5 * snA - sAA) / ntot
+    MSI <- (0.5 * snA + sAA - s2A) / (ntot - npopeff)
+    MSP <- (s2A - 0.5 * snA^2 / ntot) / (npopeff - 1)
+    s2G <- MSG; s2I <- 0.5 * (MSI - MSG); s2P <- (MSP - MSI) / (2 * nc)
+    s1 <- s1 + s2P
+    s3 <- s3 + s2P + s2I + s2G
+  }
+  list(s1 = s1, s3 = s3, nc = nc)
+}
+
+# Build RAW pop_data entry for one (locus, pop)
+.fr_raw_popdata <- function(parsed) {
+  ni <- parsed$n_valid
+  list(ni = ni, nA = parsed$cnt, AA = parsed$H_ii)
+}
+
+# Build ENA pop_data entry for one (locus, pop), given EM output `em`
+.fr_ena_popdata <- function(em) {
+  ni <- em$N
+  nA <- em$cq * 2 * ni
+  cAA <- stats::setNames(numeric(length(em$alleles)), em$alleles)
+  for (a in em$alleles) {
+    AA <- em$H_ii[a]
+    if (!is.na(AA) && AA > 0) {
+      denom <- em$cq[a] + 2 * em$rd
+      cAA[a] <- if (denom > 0) AA * (em$cq[a] / denom) else 0
+    }
+  }
+  names(nA) <- em$alleles
+  list(ni = ni, nA = nA, AA = cAA)
+}
+
+# ============================================================
+# 4. Cavalli-Sforza & Edwards chord distance — one locus, one pair
+# ============================================================
+
+# freq_i, freq_j: named allele-frequency vectors (RAW genefreq, or ENA cq with
+# an appended null-state entry for INA — see .fr_append_null_state)
+.fr_cs_prod <- function(freq_i, freq_j) {
+  alleles <- union(names(freq_i), names(freq_j))
+  s <- 0
+  for (a in alleles) {
+    pi_ <- if (a %in% names(freq_i)) freq_i[[a]] else 0
+    pj_ <- if (a %in% names(freq_j)) freq_j[[a]] else 0
+    if (pi_ > 0 && pj_ > 0) s <- s + sqrt(pi_ * pj_)
+  }
+  s
+}
+
+# INA: append rd as an extra allele category named "__null__" — NOT renormalised
+.fr_append_null_state <- function(cq, rd) {
+  c(cq, `__null__` = rd)
+}
+
+# ============================================================
+# 5. Per-locus computation for ALL populations + ALL pairs
+# ============================================================
+
+# hap_df    : data.frame, individuals (rows) x loci (cols), genotype strings
+# pop_vector: character vector, population label per individual (row of hap_df)
+# null_code : e.g. "999999"
+#
+# Returns a list with everything needed for global/pairwise Fst & CS distance,
+# observed values AND the precomputed per-locus building blocks needed for the
+# loci-bootstrap (so bootstrap replicates never re-touch genotype data).
+.fr_compute_all <- function(hap_df, pop_vector, null_code = "999999") {
+  pops <- sort(unique(pop_vector))
+  loci <- colnames(hap_df)
+  npop <- length(pops)
+  nloc <- length(loci)
+  efpop <- stats::setNames(as.integer(table(factor(pop_vector, levels = pops))), pops)
+
+  pair_list <- if (npop >= 2L) utils::combn(pops, 2, simplify = FALSE) else list()
+  npairs <- length(pair_list)
+
+  # Per-locus, per-pop caches
+  parsed_cache <- vector("list", nloc); names(parsed_cache) <- loci
+  em_cache     <- vector("list", nloc); names(em_cache)     <- loci
+
+  for (lo in loci) {
+    parsed_cache[[lo]] <- vector("list", npop); names(parsed_cache[[lo]]) <- pops
+    em_cache[[lo]]     <- vector("list", npop); names(em_cache[[lo]])     <- pops
+    for (p in pops) {
+      idx <- which(pop_vector == p)
+      pr  <- .fr_parse_locus_pop(hap_df[[lo]][idx], null_code)
+      parsed_cache[[lo]][[p]] <- pr
+      em_cache[[lo]][[p]]     <- .fr_em_null(pr, efpop[[p]])
+    }
+  }
+
+  # ---- Per-locus GLOBAL Fst components (raw & ena) ----
+  s1l_raw <- s3l_raw <- nc_l_raw <- numeric(nloc)
+  s1l_ena <- s3l_ena <- nc_l_ena <- numeric(nloc)
+
+  for (li in seq_len(nloc)) {
+    lo <- loci[li]
+    alleles_raw <- sort(unique(unlist(lapply(pops, function(p) parsed_cache[[lo]][[p]]$alleles))))
+    alleles_ena <- sort(unique(unlist(lapply(pops, function(p) em_cache[[lo]][[p]]$alleles))))
+
+    pd_raw <- lapply(pops, function(p) .fr_raw_popdata(parsed_cache[[lo]][[p]]))
+    pd_ena <- lapply(pops, function(p) .fr_ena_popdata(em_cache[[lo]][[p]]))
+
+    comp_raw <- .fr_wc84_components(pd_raw, alleles_raw)
+    comp_ena <- .fr_wc84_components(pd_ena, alleles_ena)
+
+    s1l_raw[li] <- comp_raw$s1; s3l_raw[li] <- comp_raw$s3; nc_l_raw[li] <- comp_raw$nc
+    s1l_ena[li] <- comp_ena$s1; s3l_ena[li] <- comp_ena$s3; nc_l_ena[li] <- comp_ena$nc
+  }
+
+  # Weighted (double-nc) per-locus contributions to the GLOBAL multilocus Fst
+  w_s1_raw <- s1l_raw * nc_l_raw; w_s3_raw <- s3l_raw * nc_l_raw
+  w_s1_ena <- s1l_ena * nc_l_ena; w_s3_ena <- s3l_ena * nc_l_ena
+
+  fst_global_raw <- if (sum(w_s3_raw) != 0) sum(w_s1_raw) / sum(w_s3_raw) else NA_real_
+  fst_global_ena <- if (sum(w_s3_ena) != 0) sum(w_s1_ena) / sum(w_s3_ena) else NA_real_
+
+  # ---- Per-locus PAIRWISE Fst + CS distance components ----
+  w_s1_raw_pair <- w_s3_raw_pair <- matrix(0, npairs, nloc)
+  w_s1_ena_pair <- w_s3_ena_pair <- matrix(0, npairs, nloc)
+  dc_raw_pair   <- dc_ena_pair   <- matrix(NA_real_, npairs, nloc)
+
+  for (pi in seq_len(npairs)) {
+    p1 <- pair_list[[pi]][1L]; p2 <- pair_list[[pi]][2L]
+    for (li in seq_len(nloc)) {
+      lo <- loci[li]
+      pr1 <- parsed_cache[[lo]][[p1]]; pr2 <- parsed_cache[[lo]][[p2]]
+      em1 <- em_cache[[lo]][[p1]];     em2 <- em_cache[[lo]][[p2]]
+
+      # Pairwise Fst — raw
+      alleles_pair_raw <- sort(unique(c(pr1$alleles, pr2$alleles)))
+      pd_raw <- list(.fr_raw_popdata(pr1), .fr_raw_popdata(pr2))
+      comp_raw <- .fr_wc84_components(pd_raw, alleles_pair_raw)
+      w_s1_raw_pair[pi, li] <- comp_raw$s1 * comp_raw$nc
+      w_s3_raw_pair[pi, li] <- comp_raw$s3 * comp_raw$nc
+
+      # Pairwise Fst — ena
+      alleles_pair_ena <- sort(unique(c(em1$alleles, em2$alleles)))
+      pd_ena <- list(.fr_ena_popdata(em1), .fr_ena_popdata(em2))
+      comp_ena <- .fr_wc84_components(pd_ena, alleles_pair_ena)
+      w_s1_ena_pair[pi, li] <- comp_ena$s1 * comp_ena$nc
+      w_s3_ena_pair[pi, li] <- comp_ena$s3 * comp_ena$nc
+
+      # CS distance — raw
+      ni1 <- pr1$n_valid; ni2 <- pr2$n_valid
+      if (ni1 > 0L && ni2 > 0L) {
+        cs <- .fr_cs_prod(pr1$cnt / (2 * ni1), pr2$cnt / (2 * ni2))
+        if (cs <= 1.0) dc_raw_pair[pi, li] <- (2 / pi) * sqrt(2 * (1 - cs))
+      }
+
+      # CS distance — ena (INA: append rd, no renormalisation)
+      Ni1 <- em1$N; Ni2 <- em2$N
+      if (!isTRUE(em1$notappl) && !isTRUE(em2$notappl) && Ni1 > 0L && Ni2 > 0L) {
+        f1 <- .fr_append_null_state(em1$cq, em1$rd)
+        f2 <- .fr_append_null_state(em2$cq, em2$rd)
+        cs_c <- .fr_cs_prod(f1, f2)
+        if (cs_c <= 1.0) dc_ena_pair[pi, li] <- (2 / pi) * sqrt(2 * (1 - cs_c))
+      }
+    }
+  }
+
+  fst_pair_raw <- ifelse(rowSums(w_s3_raw_pair) != 0,
+                         rowSums(w_s1_raw_pair) / rowSums(w_s3_raw_pair), NA_real_)
+  fst_pair_ena <- ifelse(rowSums(w_s3_ena_pair) != 0,
+                         rowSums(w_s1_ena_pair) / rowSums(w_s3_ena_pair), NA_real_)
+  dc_pair_raw  <- rowMeans(dc_raw_pair, na.rm = TRUE)
+  dc_pair_ena  <- rowMeans(dc_ena_pair, na.rm = TRUE)
+
+  pair_df <- data.frame(
+    Pop1 = vapply(pair_list, `[`, character(1), 1L),
+    Pop2 = vapply(pair_list, `[`, character(1), 2L),
+    FST_raw  = fst_pair_raw,  FST_ENA      = fst_pair_ena,
+    DCSE_raw = dc_pair_raw,   DCSE_INA     = dc_pair_ena,
+    stringsAsFactors = FALSE
+  )
+
+  list(
+    pops = pops, loci = loci, npop = npop, nloc = nloc, efpop = efpop,
+    pair_list = pair_list, pair_df = pair_df,
+    fst_global_raw = fst_global_raw, fst_global_ena = fst_global_ena,
+    # per-locus weighted contributions, needed for loci-bootstrap:
+    w_s1_raw = w_s1_raw, w_s3_raw = w_s3_raw,
+    w_s1_ena = w_s1_ena, w_s3_ena = w_s3_ena,
+    w_s1_raw_pair = w_s1_raw_pair, w_s3_raw_pair = w_s3_raw_pair,
+    w_s1_ena_pair = w_s1_ena_pair, w_s3_ena_pair = w_s3_ena_pair,
+    dc_raw_pair = dc_raw_pair, dc_ena_pair = dc_ena_pair,
+    em_cache = em_cache, parsed_cache = parsed_cache
+  )
+}
+
+# ============================================================
+# 6. Loci bootstrap — ONE shared resampled-loci sequence per replicate,
+#    applied simultaneously to every statistic (global, pairwise, raw, ena,
+#    Fst and CS distance) exactly as in the Pascal main loop.
+# ============================================================
+
+.fr_bootstrap_loci <- function(res, n_boot = 1000L, conf = 0.95) {
+  nloc <- res$nloc
+  npairs <- nrow(res$pair_df)
+  alpha <- (1 - conf) / 2
+
+  boot_global_raw <- numeric(n_boot)
+  boot_global_ena <- numeric(n_boot)
+  boot_pair_raw <- matrix(NA_real_, n_boot, npairs)
+  boot_pair_ena <- matrix(NA_real_, n_boot, npairs)
+  boot_dc_raw   <- matrix(NA_real_, n_boot, npairs)
+  boot_dc_ena   <- matrix(NA_real_, n_boot, npairs)
+
+  for (b in seq_len(n_boot)) {
+    idx <- sample.int(nloc, nloc, replace = TRUE)   # SAME draw for everything below
+
+    s1g_r <- sum(res$w_s1_raw[idx]); s3g_r <- sum(res$w_s3_raw[idx])
+    s1g_e <- sum(res$w_s1_ena[idx]); s3g_e <- sum(res$w_s3_ena[idx])
+    boot_global_raw[b] <- if (s3g_r != 0) s1g_r / s3g_r else NA_real_
+    boot_global_ena[b] <- if (s3g_e != 0) s1g_e / s3g_e else NA_real_
+
+    for (pi in seq_len(npairs)) {
+      s1p_r <- sum(res$w_s1_raw_pair[pi, idx]); s3p_r <- sum(res$w_s3_raw_pair[pi, idx])
+      s1p_e <- sum(res$w_s1_ena_pair[pi, idx]); s3p_e <- sum(res$w_s3_ena_pair[pi, idx])
+      boot_pair_raw[b, pi] <- if (s3p_r != 0) s1p_r / s3p_r else NA_real_
+      boot_pair_ena[b, pi] <- if (s3p_e != 0) s1p_e / s3p_e else NA_real_
+
+      boot_dc_raw[b, pi] <- mean(res$dc_raw_pair[pi, idx], na.rm = TRUE)
+      boot_dc_ena[b, pi] <- mean(res$dc_ena_pair[pi, idx], na.rm = TRUE)
+    }
+  }
+
+  qfun <- function(v) {
+    v <- v[is.finite(v)]
+    if (length(v) < 2L) return(c(NA_real_, NA_real_))
+    unname(stats::quantile(v, c(alpha, 1 - alpha)))
+  }
+
+  list(
+    global_raw_ci = qfun(boot_global_raw), global_ena_ci = qfun(boot_global_ena),
+    pair_raw_ci = t(apply(boot_pair_raw, 2, qfun)),
+    pair_ena_ci = t(apply(boot_pair_ena, 2, qfun)),
+    dc_raw_ci   = t(apply(boot_dc_raw, 2, qfun)),
+    dc_ena_ci   = t(apply(boot_dc_ena, 2, qfun)),
+    n_boot = n_boot, conf = conf
+  )
+}
