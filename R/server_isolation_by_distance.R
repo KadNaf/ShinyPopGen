@@ -1,10 +1,12 @@
 # server_null_alleles.R
 # Calls engine_freena.R (faithful translation of FreeNA_optm2R.pas) for all
-# statistics. This file only handles: DB plumbing (genotype retrieval),
-# wiring engine outputs to the UI, and downloads.
+# genetic-distance statistics. Tabs 5-6 (Isolation by Distance, Mantel test)
+# reuse the pairwise FST/FST-ENA/DCSE/DCSE-INA + bootstrap CI computed here —
+# nothing is recomputed — following the SPG-V1 module specification.
 #
-# IMPORTANT: source engine_freena.R before this file (e.g. in app.R / global.R):
-#   source("engine_freena.R")
+# IMPORTANT: source engine_freena.R before this file (e.g. in app.R / global.R
+# / help.R):
+#   source("help.R")                 # contains engine_freena.R functions
 #   source("ui_null_alleles.R")
 #   source("server_null_alleles.R")
 
@@ -27,7 +29,6 @@ server_isolation_by_distance <- function(id, rv) {
     })
 
     # ── Raw genotypes -> hap_df (individuals x loci) + pop_vector ──────────
-    # (Same reconstruction logic as the other modules in this app.)
     raw_genos_r <- reactive({
       db_ready()
       con     <- con_r()
@@ -101,6 +102,27 @@ server_isolation_by_distance <- function(id, rv) {
       shiny::validate(shiny::need(ncol(hap_df) > 0L,
         "No locus columns could be reconstructed."))
       list(hap_df = hap_df, pop_vector = pop_vector, n_loci = ncol(hap_df))
+    })
+
+    # ── Population GPS centroids (optional, for IBD tab) ──────────────────
+    coords_r <- reactive({
+      db_ready()
+      con  <- con_r()
+      cols <- tryCatch(DBI::dbGetQuery(con, sprintf(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = '%s'",
+        tbl_meta_r()))$column_name, error = function(e) character(0))
+      if (!all(c("Latitude", "Longitude") %in% cols)) return(NULL)
+      df <- tryCatch(DBI::dbGetQuery(con, sprintf(
+        "SELECT Population,
+                AVG(CAST(Latitude  AS DOUBLE)) AS Latitude,
+                AVG(CAST(Longitude AS DOUBLE)) AS Longitude
+         FROM %s
+         WHERE Population IS NOT NULL
+           AND Latitude IS NOT NULL AND Longitude IS NOT NULL
+         GROUP BY Population ORDER BY Population",
+        sql_ident(con, tbl_meta_r()))), error = function(e) NULL)
+      if (is.null(df) || nrow(df) < 2L) return(NULL)
+      df
     })
 
     # ── Populate per-locus / per-pop filter selectors ───────────────────────
@@ -387,6 +409,410 @@ server_isolation_by_distance <- function(id, rv) {
     output$dl_locus_pair_csv <- downloadHandler(
       filename = function() paste0("per_locus_pair_", Sys.Date(), ".csv"),
       content  = function(file) write.csv(locus_pair_table_r(), file, row.names = FALSE)
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # SHARED HELPER — full pairwise table (FST, FST-ENA, DCSE, DCSE-INA, FR,
+    # FR-ENA + bootstrap CI bounds, linearised) + Dgeo/lnDgeo if GPS present.
+    # Used by BOTH the Isolation by Distance tab and the Mantel tab.
+    # ══════════════════════════════════════════════════════════════════════
+
+    .linearise <- function(x) { x <- pmin(pmax(x, 0), 0.9999); x / (1 - x) }
+
+    .haversine_km <- function(lat1, lon1, lat2, lon2) {
+      R <- 6371.0
+      dlat <- (lat2 - lat1) * pi / 180; dlon <- (lon2 - lon1) * pi / 180
+      a <- sin(dlat / 2)^2 + cos(lat1 * pi / 180) * cos(lat2 * pi / 180) * sin(dlon / 2)^2
+      2 * R * asin(sqrt(a))
+    }
+
+    full_pair_table_r <- reactive({
+      rr <- results_r(); r <- rr$res; boot <- rr$boot
+      df <- r$pair_df[, c("Pop1", "Pop2", "FST_raw", "FST_ENA", "DCSE_raw", "DCSE_INA")]
+
+      if (!is.null(boot)) {
+        df$FST_raw_lo <- boot$pair_raw_ci[, 1]; df$FST_raw_hi <- boot$pair_raw_ci[, 2]
+        df$FST_ENA_lo <- boot$pair_ena_ci[, 1]; df$FST_ENA_hi <- boot$pair_ena_ci[, 2]
+      } else {
+        df$FST_raw_lo <- NA_real_; df$FST_raw_hi <- NA_real_
+        df$FST_ENA_lo <- NA_real_; df$FST_ENA_hi <- NA_real_
+      }
+
+      # Rousset's FR = FST/(1-FST); CI bounds linearised too (monotonic transform)
+      df$FR     <- .linearise(df$FST_raw)
+      df$FR_lo  <- .linearise(df$FST_raw_lo)
+      df$FR_hi  <- .linearise(df$FST_raw_hi)
+      df$FR_ENA    <- .linearise(df$FST_ENA)
+      df$FR_ENA_lo <- .linearise(df$FST_ENA_lo)
+      df$FR_ENA_hi <- .linearise(df$FST_ENA_hi)
+
+      # Geographic distance, if GPS available
+      coords <- tryCatch(coords_r(), error = function(e) NULL)
+      if (!is.null(coords)) {
+        get_d <- function(p1, p2) {
+          c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
+          if (nrow(c1) >= 1L && nrow(c2) >= 1L)
+            .haversine_km(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
+          else NA_real_
+        }
+        df$Dgeo_km <- mapply(get_d, df$Pop1, df$Pop2)
+        df$lnDgeo  <- ifelse(df$Dgeo_km > 0, log(df$Dgeo_km), NA_real_)
+      } else {
+        df$Dgeo_km <- NA_real_; df$lnDgeo <- NA_real_
+      }
+
+      df
+    })
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 5 — Isolation by Distance (Rousset 1997)
+    # ══════════════════════════════════════════════════════════════════════
+
+    .fit_line <- function(y, x) {
+      ok <- is.finite(y) & is.finite(x)
+      if (sum(ok) < 3L) return(list(slope = NA_real_, intercept = NA_real_, r2 = NA_real_))
+      m <- lm(y[ok] ~ x[ok])
+      list(slope = unname(coef(m)[2L]), intercept = unname(coef(m)[1L]), r2 = summary(m)$r.squared)
+    }
+
+    ibd_results_r <- eventReactive(input$run_ibd, {
+      df <- full_pair_table_r()
+      shiny::validate(shiny::need(
+        any(is.finite(df$Dgeo_km)),
+        "No geographic distances available. Set Latitude/Longitude at import for at least 2 populations."))
+
+      use_log <- identical(input$ibd_model, "2D")
+      x <- if (use_log) df$lnDgeo else df$Dgeo_km
+      x_label <- if (use_log) "ln(Dgeo)" else "Dgeo (km)"
+
+      if (identical(input$ibd_metric, "ena")) {
+        y_avg <- df$FR_ENA; y_lo <- df$FR_ENA_lo; y_hi <- df$FR_ENA_hi
+        y_label <- "FR-ENA"
+      } else {
+        y_avg <- df$FR; y_lo <- df$FR_lo; y_hi <- df$FR_hi
+        y_label <- "FR"
+      }
+
+      reg_avg <- .fit_line(y_avg, x)
+      reg_lo  <- .fit_line(y_lo,  x)
+      reg_hi  <- .fit_line(y_hi,  x)
+
+      list(df = df, x = x, y_avg = y_avg, y_lo = y_lo, y_hi = y_hi,
+           x_label = x_label, y_label = y_label,
+           reg_avg = reg_avg, reg_lo = reg_lo, reg_hi = reg_hi,
+           use_log = use_log, metric = input$ibd_metric)
+    })
+
+    output$dt_ibd_reg <- DT::renderDT({
+      r <- ibd_results_r()
+      fmt <- function(x) if (is.na(x)) "NA" else formatC(x, format = "f", digits = 6)
+      tab <- data.frame(
+        Line      = c(paste0(r$y_label, " (point estimate)"),
+                       paste0(r$y_label, "-l (lower CI)"),
+                       paste0(r$y_label, "-u (upper CI)")),
+        Slope     = c(fmt(r$reg_avg$slope), fmt(r$reg_lo$slope), fmt(r$reg_hi$slope)),
+        Intercept = c(fmt(r$reg_avg$intercept), fmt(r$reg_lo$intercept), fmt(r$reg_hi$intercept)),
+        R2        = c(fmt(r$reg_avg$r2), fmt(r$reg_lo$r2), fmt(r$reg_hi$r2)),
+        stringsAsFactors = FALSE
+      )
+      DT::datatable(tab, rownames = FALSE,
+        options = list(dom = "t", pageLength = 3, ordering = FALSE),
+        class = "compact stripe")
+    })
+
+    output$ui_ibd_interpretation <- renderUI({
+      r <- ibd_results_r()
+      slopes <- c(r$reg_avg$slope, r$reg_lo$slope, r$reg_hi$slope)
+      if (any(is.na(slopes))) {
+        return(tags$div(class = "spg-method-note", style = "border-left-color:#999;",
+          "Could not fit all three regression lines (insufficient valid pairs)."))
+      }
+      all_pos <- all(slopes > 0)
+      lo_neg  <- r$reg_lo$slope < 0 && r$reg_avg$slope > 0 && r$reg_hi$slope > 0
+      if (all_pos) {
+        tags$div(style = "padding:10px; background:#dcfce7; border:1px solid #86efac; border-radius:6px; color:#166534; font-size:13px;",
+          icon("check-circle"), tags$strong(" All three slopes are positive: "),
+          "this supports isolation by distance.")
+      } else if (lo_neg) {
+        tags$div(style = "padding:10px; background:#fffbeb; border:1px solid #fcd34d; border-radius:6px; color:#92400e; font-size:13px;",
+          icon("exclamation-triangle"), tags$strong(" Lower-bound slope is negative: "),
+          "this may indicate low power of the per-pair bootstrap rather than a true absence of IBD. ",
+          "Consider running the Mantel test (next tab), ideally with DCSE, to confirm.")
+      } else {
+        tags$div(style = "padding:10px; background:#fef2f2; border:1px solid #fca5a5; border-radius:6px; color:#991b1b; font-size:13px;",
+          icon("times-circle"), tags$strong(" No consistent positive trend: "),
+          "no clear evidence of isolation by distance with this dataset/model.")
+      }
+    })
+
+    output$ibd_plot <- plotly::renderPlotly({
+      r <- ibd_results_r()
+      shiny::req(any(is.finite(r$x)))
+      x_seq <- seq(min(r$x, na.rm = TRUE), max(r$x, na.rm = TRUE), length.out = 100)
+      mkline <- function(reg) if (is.na(reg$slope)) NULL else
+        data.frame(x = x_seq, y = reg$intercept + reg$slope * x_seq)
+      l_avg <- mkline(r$reg_avg); l_lo <- mkline(r$reg_lo); l_hi <- mkline(r$reg_hi)
+
+      p <- plotly::plot_ly() %>%
+        plotly::add_segments(x = ~r$x, xend = ~r$x, y = ~r$y_lo, yend = ~r$y_hi,
+          line = list(color = "rgba(100,100,100,0.35)", width = 1),
+          showlegend = FALSE, hoverinfo = "none") %>%
+        plotly::add_markers(
+          x = r$x, y = r$y_avg,
+          text = paste0(r$df$Pop1, " \u2013 ", r$df$Pop2),
+          hoverinfo = "text",
+          marker = list(color = "#2CBF9F", size = 7, opacity = 0.85),
+          name = "Pairs")
+
+      if (!is.null(l_avg)) p <- p %>% plotly::add_lines(data = l_avg, x = ~x, y = ~y,
+        line = list(color = "#333a43", width = 2), name = sprintf("Avg b=%.4f", r$reg_avg$slope))
+      if (!is.null(l_lo)) p <- p %>% plotly::add_lines(data = l_lo, x = ~x, y = ~y,
+        line = list(color = "#3B9AB2", width = 1.5, dash = "dot"), name = sprintf("Lower CI b=%.4f", r$reg_lo$slope))
+      if (!is.null(l_hi)) p <- p %>% plotly::add_lines(data = l_hi, x = ~x, y = ~y,
+        line = list(color = "#B40F20", width = 1.5, dash = "dash"), name = sprintf("Upper CI b=%.4f", r$reg_hi$slope))
+
+      p %>% plotly::layout(
+        xaxis = list(title = r$x_label), yaxis = list(title = r$y_label),
+        legend = list(x = 0.02, y = 0.98, bgcolor = "rgba(255,255,255,0.8)"),
+        margin = list(t = 30))
+    })
+
+    output$dt_ibd_table <- DT::renderDT({
+      r <- ibd_results_r()
+      df <- r$df[, c("Pop1", "Pop2", "Dgeo_km", "lnDgeo", "FR", "FR_lo", "FR_hi", "FR_ENA", "FR_ENA_lo", "FR_ENA_hi")]
+      num_cols <- setdiff(names(df), c("Pop1", "Pop2"))
+      df[num_cols] <- lapply(df[num_cols], round, 5)
+      DT::datatable(df, rownames = FALSE,
+        options = list(scrollX = TRUE, pageLength = 10, dom = "lrtip"),
+        class = "compact stripe hover")
+    })
+    output$dl_ibd_csv <- downloadHandler(
+      filename = function() paste0("IBD_pairwise_", Sys.Date(), ".csv"),
+      content  = function(file) write.csv(ibd_results_r()$df, file, row.names = FALSE)
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 6 — Mantel test (joint row/column permutation; rectangular-safe)
+    # ══════════════════════════════════════════════════════════════════════
+
+    .mt_build_square <- function(df, id1, id2, value_col, all_labels) {
+      n <- length(all_labels)
+      m <- matrix(NA_real_, n, n, dimnames = list(all_labels, all_labels))
+      for (k in seq_len(nrow(df))) {
+        i <- as.character(df[[id1]][k]); j <- as.character(df[[id2]][k]); v <- df[[value_col]][k]
+        if (i %in% all_labels && j %in% all_labels && is.finite(v)) { m[i, j] <- v; m[j, i] <- v }
+      }
+      m
+    }
+
+    .mt_mantel_matrix <- function(mat1, mat2, n_perm = 9999L, stat = "r") {
+      common <- intersect(rownames(mat1), rownames(mat2))
+      if (length(common) < 3L)
+        return(list(stat_obs = NA_real_, p_pos = NA_real_, p_neg = NA_real_, n_pairs = 0L,
+                    slope = NA_real_, intercept = NA_real_, r2 = NA_real_,
+                    x = numeric(0), y = numeric(0), common = common, perm_stats = numeric(0)))
+      m1 <- mat1[common, common, drop = FALSE]; m2 <- mat2[common, common, drop = FALSE]
+      n  <- length(common)
+      lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+      x_all <- m1[lower_idx]; y_all <- m2[lower_idx]
+      stat_fn <- function(xx, yy) {
+        ok <- is.finite(xx) & is.finite(yy)
+        if (sum(ok) < 3L) return(NA_real_)
+        if (stat == "b") unname(coef(lm(yy[ok] ~ xx[ok]))[2L]) else suppressWarnings(cor(xx[ok], yy[ok]))
+      }
+      ok_obs   <- is.finite(x_all) & is.finite(y_all)
+      stat_obs <- stat_fn(x_all, y_all)
+      perm_stats <- vapply(seq_len(n_perm), function(.b) {
+        perm <- sample.int(n); m2p <- m2[perm, perm, drop = FALSE]
+        stat_fn(x_all, m2p[lower_idx])
+      }, numeric(1L))
+      perm_fin <- perm_stats[is.finite(perm_stats)]
+      p_pos <- if (length(perm_fin) > 0L && is.finite(stat_obs)) mean(perm_fin >= stat_obs) else NA_real_
+      lm0 <- tryCatch(lm(y_all[ok_obs] ~ x_all[ok_obs]), error = function(e) NULL)
+      list(stat_obs = stat_obs, p_pos = p_pos, p_neg = 1 - p_pos, n_pairs = sum(ok_obs),
+           slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
+           intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
+           r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
+           x = x_all[ok_obs], y = y_all[ok_obs], common = common, perm_stats = perm_fin)
+    }
+
+    .mt_read_file <- function(fileinfo, sep, header) {
+      df <- tryCatch(read.table(fileinfo$datapath, header = header, sep = sep,
+                                stringsAsFactors = FALSE, check.names = FALSE,
+                                fill = TRUE, quote = "\""),
+                     error = function(e) NULL)
+      shiny::validate(shiny::need(!is.null(df) && nrow(df) >= 3L,
+        "Could not parse the file. Check separator / header settings."))
+      df
+    }
+
+    mt_base_df_r <- reactive({
+      if (input$mt_source == "internal") {
+        df <- full_pair_table_r()
+        if (isTRUE(input$mt_use_extra)) {
+          shiny::req(input$mt_extra_file)
+          extra <- .mt_read_file(input$mt_extra_file, input$mt_extra_sep, input$mt_extra_header)
+          shiny::validate(shiny::need(ncol(extra) >= 3L,
+            "Extra file must have 2 ID columns + at least 1 distance column."))
+          id_cols  <- names(extra)[1:2]
+          val_cols <- setdiff(names(extra), id_cols)
+          extra_keep <- extra[, val_cols, drop = FALSE]
+          key <- function(a, b) { a<-as.character(a); b<-as.character(b); ifelse(a<=b, paste(a,b,sep="__"), paste(b,a,sep="__")) }
+          extra_keep$.key <- key(extra[[1L]], extra[[2L]])
+          extra_keep <- extra_keep[!duplicated(extra_keep$.key), , drop = FALSE]
+          df$.key <- key(df$Pop1, df$Pop2)
+          df <- merge(df, extra_keep, by = ".key", all.x = TRUE, sort = FALSE)
+          df$.key <- NULL
+        }
+        df
+      } else {
+        shiny::req(input$mt_file)
+        .mt_read_file(input$mt_file, input$mt_sep, input$mt_header)
+      }
+    })
+
+    .guess_col <- function(cols, patterns, fallback) {
+      for (pat in patterns) { hit <- grep(pat, cols, value = TRUE, ignore.case = TRUE); if (length(hit)) return(hit[1L]) }
+      fallback
+    }
+
+    output$mt_col_pop1_ui <- renderUI({
+      cols <- tryCatch(names(mt_base_df_r()), error = function(e) character(0))
+      selectInput(session$ns("mt_col_pop1"), "Population 1 column:", choices = cols,
+                  selected = .guess_col(cols, c("^Pop1$"), cols[1]))
+    })
+    output$mt_col_pop2_ui <- renderUI({
+      cols <- tryCatch(names(mt_base_df_r()), error = function(e) character(0))
+      selectInput(session$ns("mt_col_pop2"), "Population 2 column:", choices = cols,
+                  selected = .guess_col(cols, c("^Pop2$"), cols[min(2L, length(cols))]))
+    })
+    output$mt_col_x_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("mt_col_x"), "X column:", choices = cols,
+                  selected = .guess_col(cols, c("Dgeo", "lnDgeo"), if (length(cols)) cols[1] else NULL))
+    })
+    output$mt_col_y_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("mt_col_y"), "Y column:", choices = cols,
+                  selected = .guess_col(cols, c("^FR_ENA$", "^FR$", "FST_ENA", "DCSE"),
+                                        if (length(cols) >= 2L) cols[2] else NULL))
+    })
+
+    mantel_result_r <- eventReactive(input$run_mantel, {
+      df <- mt_base_df_r()
+      shiny::req(input$mt_col_pop1, input$mt_col_pop2, input$mt_col_x, input$mt_col_y)
+      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2; xcol <- input$mt_col_x; ycol <- input$mt_col_y
+
+      shiny::validate(
+        shiny::need(all(c(p1c, p2c, xcol, ycol) %in% names(df)), "Selected columns not found."),
+        shiny::need(p1c != p2c, "Population 1 and 2 must differ."),
+        shiny::need(xcol != ycol, "X and Y must differ.")
+      )
+
+      if (nzchar(trimws(input$mt_exclude %||% ""))) {
+        excl <- trimws(strsplit(input$mt_exclude, ",")[[1L]]); excl <- excl[nzchar(excl)]
+        if (length(excl)) {
+          key <- function(a,b){a<-as.character(a);b<-as.character(b);ifelse(a<=b,paste(a,b,sep="__"),paste(b,a,sep="__"))}
+          key_df <- key(df[[p1c]], df[[p2c]])
+          key_excl <- vapply(excl, function(s) {
+            ids <- trimws(strsplit(s, "-")[[1L]]); if (length(ids) == 2L) key(ids[1], ids[2]) else NA_character_
+          }, character(1L))
+          df <- df[!(key_df %in% key_excl), , drop = FALSE]
+        }
+      }
+
+      x <- suppressWarnings(as.numeric(df[[xcol]]))
+      y <- suppressWarnings(as.numeric(df[[ycol]]))
+      if (isTRUE(input$mt_log_x)) x <- ifelse(x > 0, log(x), NA_real_)
+
+      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
+      tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]), X = x, Y = y)
+      m_x <- .mt_build_square(tmp, "P1", "P2", "X", all_labels)
+      m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
+
+      n_perm <- as.integer(input$mt_n_perm); stat <- input$mt_stat
+      withProgress(message = "Running Mantel test\u2026", value = 0.2, {
+        res <- .mt_mantel_matrix(m_y, m_x, n_perm = n_perm, stat = stat)
+        setProgress(1.0)
+      })
+      res$x_label <- paste0(xcol, if (isTRUE(input$mt_log_x)) " (ln)" else "")
+      res$y_label <- ycol
+      res$stat_label <- if (stat == "b") "Slope b" else "Pearson r"
+      res
+    })
+
+    output$box_m_stat <- renderValueBox({
+      r <- mantel_result_r()
+      valueBox(round(r$stat_obs, 4), HTML(paste0(r$stat_label, "<br>(observed)")),
+               icon = icon("chart-line"), color = "purple")
+    })
+    output$box_m_pval <- renderValueBox({
+      r <- mantel_result_r(); pv <- r$p_pos
+      col <- if (is.na(pv)) "yellow" else if (pv < 0.05) "green" else if (pv < 0.10) "yellow" else "red"
+      valueBox(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4),
+               HTML("p-value<br>(one-sided)"), icon = icon("check-circle"), color = col)
+    })
+    output$box_m_n <- renderValueBox({
+      valueBox(mantel_result_r()$n_pairs, "Pairs used", icon = icon("project-diagram"), color = "blue")
+    })
+    output$box_m_r2 <- renderValueBox({
+      r2 <- mantel_result_r()$r2
+      valueBox(if (is.na(r2)) "NA" else paste0(round(r2 * 100, 1), "%"),
+               HTML("Variance<br>explained (R\u00b2)"), icon = icon("percentage"), color = "teal")
+    })
+
+    output$ui_mantel_summary <- renderUI({
+      r <- mantel_result_r()
+      tags$div(style = "margin-top:8px; font-family:monospace; font-size:12px; color:#555;",
+        sprintf("Slope = %.6f, Intercept = %.6f", r$slope, r$intercept), tags$br(),
+        sprintf("One-sided p (negative association) = %s",
+                if (is.na(r$p_neg)) "NA" else formatC(r$p_neg, format = "f", digits = 4)), tags$br(),
+        sprintf("Common populations: %d \u2014 %s", length(r$common), paste(r$common, collapse = ", "))
+      )
+    })
+
+    output$mantel_scatter <- plotly::renderPlotly({
+      r <- mantel_result_r()
+      shiny::req(length(r$x) > 0L)
+      x_s <- seq(min(r$x), max(r$x), length.out = 100); y_s <- r$intercept + r$slope * x_s
+      plotly::plot_ly() %>%
+        plotly::add_markers(x = r$x, y = r$y, marker = list(color = "#7A5DC7", size = 8, opacity = 0.8), name = "Pairs") %>%
+        plotly::add_lines(x = x_s, y = y_s, line = list(color = "#B40F20", width = 2),
+          name = sprintf("OLS: b=%.4f, R\u00b2=%.4f", r$slope, r$r2)) %>%
+        plotly::layout(xaxis = list(title = r$x_label), yaxis = list(title = r$y_label),
+          title = list(text = sprintf("%s=%.4f, p=%.4f", r$stat_label, r$stat_obs, r$p_pos), font = list(size = 12)),
+          legend = list(x = 0.02, y = 0.98, bgcolor = "rgba(255,255,255,0.8)"), margin = list(t = 40))
+    })
+
+    output$mantel_hist <- plotly::renderPlotly({
+      r <- mantel_result_r()
+      shiny::req(length(r$perm_stats) > 0L)
+      plotly::plot_ly() %>%
+        plotly::add_histogram(x = r$perm_stats, nbinsx = 60,
+          marker = list(color = "rgba(122,93,199,0.55)", line = list(color = "rgba(122,93,199,1)", width = 0.4))) %>%
+        plotly::layout(
+          shapes = list(list(type = "line", x0 = r$stat_obs, x1 = r$stat_obs, y0 = 0, y1 = 1, yref = "paper",
+                              line = list(color = "#B40F20", width = 2, dash = "dash"))),
+          xaxis = list(title = r$stat_label), yaxis = list(title = "Count"),
+          title = list(text = sprintf("n = %d permutations", length(r$perm_stats)), font = list(size = 11)),
+          margin = list(t = 40), showlegend = FALSE)
+    })
+
+    output$dt_mantel_data <- DT::renderDT({
+      r <- mantel_result_r()
+      df <- data.frame(X = round(r$x, 6), Y = round(r$y, 6))
+      DT::datatable(df, rownames = FALSE,
+        options = list(scrollX = TRUE, pageLength = 10, dom = "lrtip"),
+        class = "compact stripe hover")
+    })
+    output$dl_mantel_csv <- downloadHandler(
+      filename = function() paste0("mantel_data_", Sys.Date(), ".csv"),
+      content  = function(file) {
+        r <- mantel_result_r()
+        write.csv(data.frame(X = r$x, Y = r$y), file, row.names = FALSE)
+      }
     )
 
   })
