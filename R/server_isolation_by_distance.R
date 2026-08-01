@@ -1,21 +1,36 @@
-# server_null_alleles.R
-# Calls engine_freena.R (faithful translation of FreeNA_optm2R.pas) for all
-# genetic-distance statistics. Tabs 5-6 (Isolation by Distance, Mantel test)
-# reuse the pairwise FST/FST-ENA/DCSE/DCSE-INA + bootstrap CI computed here —
-# nothing is recomputed — following the SPG-V1 module specification.
+# server_isolation_by_distance.R
+# Isolation by Distance (Rousset 1997) + generic Mantel test.
 #
-# IMPORTANT: source engine_freena.R before this file (e.g. in app.R / global.R
-# / help.R):
-#   source("help.R")                 # contains engine_freena.R functions
-#   source("ui_null_alleles.R")
-#   source("server_null_alleles.R")
+# This module is a CONTINUATION of the "Null alleles" module: it no longer
+# recomputes the null-allele EM / FST / FST-ENA / DCSE / DCSE-INA statistics
+# (that used to be tabs 1-4 here, duplicating the Null Alleles module) — it
+# reuses the results already computed there, shared through `rv`:
+#
+#   rv$null_alleles_results   (set by server_null_alleles.R after each
+#                              "Compute + Bootstrap + Export" run)
+#
+# So: go to the Null Alleles module, click Compute, THEN come here.
+#
+# Geographic distance (D_geo) is the Vincenty ellipsoidal geodesic distance
+# (WGS84), in metres — NOT a simple spherical Haversine approximation and
+# NOT a planar UTM distance; both were checked against a FreeNA-style
+# reference and only Vincenty reproduced it to the metre.
+#
+# References:
+#   Rousset (1997)  — Isolation by distance regression: FR = FST/(1-FST)
+#                      regressed on ln(geographic distance) (2D habitat) or
+#                      on raw distance (1D habitat); Nb = 1/slope,
+#                      Nem = Nb/(2*pi).
+#   Mantel (1967) / RT (Manly) / Fstat 2.9.4 convention — permutation test
+#      by joint row/column relabelling of one distance matrix; one-sided
+#      p = (b+1)/(m+1), b = number of permuted statistics >= observed.
 
 server_isolation_by_distance <- function(id, rv) {
   moduleServer(id, function(input, output, session) {
 
     `%||%` <- function(a, b) if (!is.null(a) && !(length(a) == 1 && is.na(a))) a else b
 
-    # ── DB plumbing (same conventions as other modules) ────────────────────
+    # ── DB plumbing (same conventions as other modules) ──────────────────────
     db_tick    <- reactive({ rv$db_tick })
     con_r      <- reactive({ shiny::req(rv$con); rv$con })
     tbl_meta_r <- reactive({ rv$tbl_meta %||% "meta" })
@@ -28,83 +43,43 @@ server_isolation_by_distance <- function(id, rv) {
       TRUE
     })
 
-    # ── Raw genotypes -> hap_df (individuals x loci) + pop_vector ──────────
-    raw_genos_r <- reactive({
-      db_ready()
-      con     <- con_r()
-      tbl_raw <- rv$tbl_raw %||% "raw"
-      shiny::validate(shiny::need(
-        DBI::dbExistsTable(con, tbl_raw),
-        "Raw genotype table not found. Please re-import the dataset."))
-
-      ok_par <- tryCatch(DBI::dbExistsTable(con, "params"), error = function(e) FALSE)
-      shiny::validate(shiny::need(ok_par, "params table not found."))
-
-      marker_json <- tryCatch(
-        DBI::dbGetQuery(con, "SELECT value FROM params WHERE key='marker_cols_raw'")$value[1L],
-        error = function(e) NA_character_)
-      marker_cols_raw <- if (!is.na(marker_json) && nzchar(marker_json))
-        tryCatch(jsonlite::fromJSON(marker_json), error = function(e) character(0))
-      else character(0)
-      shiny::validate(shiny::need(length(marker_cols_raw) > 0L, "No marker_cols_raw in params."))
-
-      geno_fmt <- tryCatch(
-        DBI::dbGetQuery(con, "SELECT value FROM params WHERE key='genotype_format'")$value[1L],
-        error = function(e) NA_character_)
-      if (is.na(geno_fmt) || !nzchar(geno_fmt))
-        geno_fmt <- if (any(grepl("(_1|\\.[0-9]+)$", marker_cols_raw))) "paired" else "string"
-
-      keep     <- unique(marker_cols_raw)
-      keep_sql <- paste(vapply(keep, function(x)
-        as.character(DBI::dbQuoteIdentifier(con, x)), character(1L)), collapse = ", ")
-      raw_df <- as.data.frame(
-        DBI::dbGetQuery(con, sprintf(
-          "SELECT rowid AS individual, %s FROM %s", keep_sql,
-          as.character(DBI::dbQuoteIdentifier(con, tbl_raw)))),
-        stringsAsFactors = FALSE)
-      shiny::validate(shiny::need(nrow(raw_df) > 0L, "No rows in raw table."))
-
-      meta_pop <- DBI::dbGetQuery(con, sprintf(
-        "SELECT individual, Population FROM %s WHERE Population IS NOT NULL",
-        sql_ident(con, tbl_meta_r())))
-      raw_df$Population <- meta_pop$Population[match(raw_df$individual, meta_pop$individual)]
-      pop_vector <- as.character(raw_df$Population)
-
-      pick_b <- function(locus, nms) {
-        cands <- c(paste0(locus, "_1"), paste0(locus, "_2"),
-                   paste0(locus, ".", 1:9), paste0(locus, "_", 1:9))
-        hit <- cands[cands %in% nms]; if (length(hit)) hit[1L] else NA_character_
-      }
-
-      if (identical(geno_fmt, "paired")) {
-        nms  <- names(raw_df)
-        loci <- unique(sub("(_1|_2|\\.[0-9]+)$", "", marker_cols_raw))
-        hap_df <- data.frame(row.names = seq_len(nrow(raw_df)))
-        for (locus in loci) {
-          b <- pick_b(locus, nms)
-          if (!locus %in% nms || is.na(b) || !b %in% nms) next
-          a_v <- as.character(raw_df[[locus]])
-          b_v <- as.character(raw_df[[b]])
-          a_v[is.na(a_v) | trimws(a_v) == ""] <- "0"
-          b_v[is.na(b_v) | trimws(b_v) == ""] <- "0"
-          already <- grepl("/", a_v, fixed = TRUE) | grepl("-", a_v, fixed = TRUE)
-          hap_df[[locus]] <- ifelse(already, a_v, paste0(a_v, "/", b_v))
-        }
-      } else {
-        hap_df <- as.data.frame(raw_df[, marker_cols_raw, drop = FALSE],
-                                 stringsAsFactors = FALSE)
-        for (j in seq_along(hap_df)) {
-          x <- as.character(hap_df[[j]])
-          x[is.na(x) | trimws(x) == ""] <- "0/0"
-          hap_df[[j]] <- x
-        }
-      }
-      shiny::validate(shiny::need(ncol(hap_df) > 0L,
-        "No locus columns could be reconstructed."))
-      list(hap_df = hap_df, pop_vector = pop_vector, n_loci = ncol(hap_df))
+    # ── Null Alleles module results (shared via rv — nothing recomputed) ────
+    na_results_r <- reactive({
+      r <- rv$null_alleles_results
+      shiny::validate(shiny::need(!is.null(r),
+        paste0("No results yet. Go to the \"Null alleles\" module, choose your ",
+               "per-locus coding, and click \"Compute + Bootstrap + Export\" first — ",
+               "this module reuses those results directly (nothing is recomputed here).")))
+      r
     })
 
-    # ── Population GPS centroids (optional, for IBD tab) ──────────────────
+    output$box_nloci <- renderValueBox({
+      valueBox(length(na_results_r()$markers), "Loci", icon = icon("dna"), color = "navy")
+    })
+    output$box_npops <- renderValueBox({
+      valueBox(length(na_results_r()$pops), "Populations", icon = icon("users"), color = "teal")
+    })
+    output$box_fstena <- renderValueBox({
+      v <- round(na_results_r()$fst_global$global_ena, 4)
+      col <- if (is.na(v)) "navy" else if (v > 0.15) "red" else if (v > 0.05) "yellow" else "green"
+      valueBox(if (is.na(v)) "NA" else v, HTML("Global F<sub>ST</sub>-ENA"),
+               icon = icon("chart-bar"), color = col)
+    })
+    output$box_nboot <- renderValueBox({
+      r <- na_results_r()
+      valueBox(r$nboot, "Bootstrap replicates (loci)", icon = icon("dice"), color = "purple")
+    })
+
+    output$ui_run_status <- renderUI({
+      r <- tryCatch(na_results_r(), error = function(e) NULL)
+      if (is.null(r)) return(NULL)
+      tags$div(class = "na-info",
+        icon("check-circle"), " ",
+        sprintf("Using Null Alleles results: %d loci \u00b7 %d populations \u00b7 %d pairwise combinations.",
+                length(r$markers), length(r$pops), nrow(r$fst_pair$long)))
+    })
+
+    # ── Population GPS centroids (needed for D_geo; IBD-specific) ───────────
     coords_r <- reactive({
       db_ready()
       con  <- con_r()
@@ -125,347 +100,105 @@ server_isolation_by_distance <- function(id, rv) {
       df
     })
 
-    # ── Populate per-locus / per-pop filter selectors ───────────────────────
-    observe({
-      rg <- tryCatch(raw_genos_r(), error = function(e) NULL)
-      if (is.null(rg)) return(invisible(NULL))
-      loci <- colnames(rg$hap_df)
-      pops <- sort(unique(rg$pop_vector))
-      updateSelectInput(session, "fl_locus", choices = c("All loci" = "all", stats::setNames(loci, loci)))
-      updateSelectInput(session, "fl_pop1",  choices = c("All pairs" = "all", stats::setNames(pops, pops)))
-      updateSelectInput(session, "fl_pop2",  choices = c("All pairs" = "all", stats::setNames(pops, pops)))
-    })
-
     # ══════════════════════════════════════════════════════════════════════
-    # MAIN COMPUTATION — engine_freena.R does all the work
+    #  GEOGRAPHIC DISTANCE — Vincenty ellipsoidal geodesic (WGS84), in metres
+    #  (validated against a FreeNA-style isolation-by-distance reference file:
+    #  matches to the metre; a spherical Haversine approximation was off by
+    #  10-20 m and a planar UTM distance was off by ~20 m over ~66 km)
     # ══════════════════════════════════════════════════════════════════════
-    results_r <- eventReactive(input$run_all, {
-      shiny::req(db_ready())
-      rg <- raw_genos_r()
-      shiny::validate(shiny::need(
-        length(unique(rg$pop_vector)) >= 2L,
-        "At least 2 populations are required."))
-
-      null_code <- trimws(input$null_code)
-      conf      <- input$conf_level / 100
-      n_boot    <- as.integer(input$n_boot)
-
-      withProgress(message = "Computing EM, Fst, Fst-ENA, DCSE, DCSE-INA\u2026", value = 0.1, {
-        res <- .fr_compute_all(rg$hap_df, rg$pop_vector, null_code = null_code)
-        setProgress(0.6, detail = "Bootstrap over loci\u2026")
-
-        # Faithful to Pascal: skip bootstrap if nperm<100 or nloc<=4
-        boot <- NULL
-        boot_skipped_reason <- NULL
-        if (n_boot >= 100L && res$nloc > 4L) {
-          boot <- .fr_bootstrap_loci(res, n_boot = n_boot, conf = conf)
-        } else if (n_boot > 0L) {
-          boot_skipped_reason <- if (n_boot < 100L)
-            "Bootstrap skipped: replicates must be >= 100 (Pascal source requirement)."
-          else
-            "Bootstrap skipped: more than 4 loci are required (Pascal source requirement)."
-        }
-        setProgress(1.0)
-      })
-
-      list(res = res, boot = boot, boot_skipped_reason = boot_skipped_reason,
-           null_code = null_code, conf = conf, n_boot = n_boot)
-    })
-
-    # ── Status banner ────────────────────────────────────────────────────
-    output$ui_run_status <- renderUI({
-      r <- tryCatch(results_r(), error = function(e) NULL)
-      if (is.null(r)) return(NULL)
-      msgs <- list(
-        tags$div(style = "margin-top:10px; padding:8px 10px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; font-size:11.5px; color:#1d4ed8;",
-          icon("check-circle"), sprintf(" Done \u2014 %d loci, %d populations.", r$res$nloc, r$res$npop))
-      )
-      if (!is.null(r$boot_skipped_reason)) {
-        msgs[[length(msgs) + 1L]] <- tags$div(
-          style = "margin-top:6px; padding:8px 10px; background:#fffbeb; border:1px solid #fcd34d; border-radius:6px; font-size:11.5px; color:#92400e;",
-          icon("exclamation-triangle"), " ", r$boot_skipped_reason)
+    .vincenty_m <- function(lat1, lon1, lat2, lon2) {
+      a <- 6378137.0; f <- 1/298.257223563; b <- (1 - f) * a
+      L  <- (lon2 - lon1) * pi / 180
+      U1 <- atan((1 - f) * tan(lat1 * pi / 180))
+      U2 <- atan((1 - f) * tan(lat2 * pi / 180))
+      sinU1 <- sin(U1); cosU1 <- cos(U1); sinU2 <- sin(U2); cosU2 <- cos(U2)
+      lam <- L
+      for (i in seq_len(200L)) {
+        sinLam <- sin(lam); cosLam <- cos(lam)
+        sinSigma <- sqrt((cosU2*sinLam)^2 + (cosU1*sinU2 - sinU1*cosU2*cosLam)^2)
+        if (sinSigma == 0) return(0)
+        cosSigma <- sinU1*sinU2 + cosU1*cosU2*cosLam
+        sigma <- atan2(sinSigma, cosSigma)
+        sinAlpha <- cosU1*cosU2*sinLam/sinSigma
+        cosSqAlpha <- 1 - sinAlpha^2
+        cos2SigmaM <- if (cosSqAlpha != 0) cosSigma - 2*sinU1*sinU2/cosSqAlpha else 0
+        C <- f/16*cosSqAlpha*(4 + f*(4 - 3*cosSqAlpha))
+        lamPrev <- lam
+        lam <- L + (1 - C)*f*sinAlpha*(sigma + C*sinSigma*(cos2SigmaM + C*cosSigma*(-1 + 2*cos2SigmaM^2)))
+        if (abs(lam - lamPrev) < 1e-12) break
       }
-      tagList(msgs)
-    })
-
-    # ── Value boxes ──────────────────────────────────────────────────────
-    output$box_nloci <- renderValueBox({
-      valueBox(results_r()$res$nloc, "Loci", icon = icon("dna"), color = "navy")
-    })
-    output$box_npops <- renderValueBox({
-      valueBox(results_r()$res$npop, "Populations", icon = icon("users"), color = "teal")
-    })
-    output$box_avgrd <- renderValueBox({
-      r <- results_r()$res
-      rds <- vapply(r$loci, function(lo) {
-        vals <- vapply(r$pops, function(p) {
-          e <- r$em_cache[[lo]][[p]]
-          if (isTRUE(e$notappl)) NA_real_ else e$rd
-        }, numeric(1))
-        mean(vals, na.rm = TRUE)
-      }, numeric(1))
-      v <- round(mean(rds, na.rm = TRUE), 4)
-      col <- if (is.na(v)) "navy" else if (v > 0.2) "red" else if (v > 0.1) "yellow" else "green"
-      valueBox(if (is.na(v)) "NA" else v, HTML("Avg r<sub>d</sub>"),
-               icon = icon("percentage"), color = col)
-    })
-    output$box_fstena <- renderValueBox({
-      v <- round(results_r()$res$fst_global_ena, 4)
-      col <- if (is.na(v)) "navy" else if (v > 0.15) "red" else if (v > 0.05) "yellow" else "green"
-      valueBox(if (is.na(v)) "NA" else v, HTML("Global F<sub>ST</sub>-ENA"),
-               icon = icon("chart-bar"), color = col)
-    })
-
-    # ══════════════════════════════════════════════════════════════════════
-    # TAB 1 — null allele frequencies (rd) table
-    # ══════════════════════════════════════════════════════════════════════
-    rd_table_r <- reactive({
-      r <- results_r()$res
-      rows <- list(); k <- 1L
-      for (lo in r$loci) {
-        for (p in r$pops) {
-          e <- r$em_cache[[lo]][[p]]
-          pr <- r$parsed_cache[[lo]][[p]]
-          rows[[k]] <- data.frame(
-            Locus = lo, Population = p,
-            rd        = if (isTRUE(e$notappl)) NA_real_ else round(e$rd, 6),
-            N_total   = r$efpop[[p]],
-            N_absent  = pr$n_absent + pr$n_nullhet,
-            N_nullhomo= pr$n_nullhomo,
-            N_valid   = pr$n_valid,
-            stringsAsFactors = FALSE)
-          k <- k + 1L
-        }
-      }
-      do.call(rbind, rows)
-    })
-
-    output$dt_rd <- DT::renderDT({
-      df <- rd_table_r()
-      DT::datatable(df, rownames = FALSE,
-        options = list(pageLength = 20, scrollX = TRUE, dom = "lftip"),
-        class = "compact hover stripe") %>%
-        DT::formatStyle("rd", backgroundColor = DT::styleInterval(
-          c(0.05, 0.10, 0.20, 0.30),
-          c("#f0fdf4", "#dcfce7", "#fefce8", "#fff7ed", "#fef2f2")))
-    })
-    output$dl_rd_csv <- downloadHandler(
-      filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".csv"),
-      content  = function(file) write.csv(rd_table_r(), file, row.names = FALSE)
-    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # TAB 2 — Fst / Fst-ENA
-    # ══════════════════════════════════════════════════════════════════════
-
-    output$ui_global_fst <- renderUI({
-      rr <- results_r(); r <- rr$res; boot <- rr$boot
-      ci_pct <- paste0(round(rr$conf * 100, 1), "%")
-      ci_raw <- if (!is.null(boot)) sprintf("[ %.6f , %.6f ]", boot$global_raw_ci[1], boot$global_raw_ci[2]) else "NA (bootstrap not run)"
-      ci_ena <- if (!is.null(boot)) sprintf("[ %.6f , %.6f ]", boot$global_ena_ci[1], boot$global_ena_ci[2]) else "NA (bootstrap not run)"
-      tags$div(style = "font-family:monospace; font-size:13px; line-height:2;",
-        tags$div(tags$strong("Raw F"), tags$sub("ST"), sprintf(": %.6f", r$fst_global_raw),
-                 tags$br(), sprintf("%s CI (bootstrap over loci): %s", ci_pct, ci_raw)),
-        tags$br(),
-        tags$div(tags$strong("F"), tags$sub("ST"), "-ENA", sprintf(": %.6f", r$fst_global_ena),
-                 tags$br(), sprintf("%s CI (bootstrap over loci): %s", ci_pct, ci_ena))
-      )
-    })
-
-    # Continuous-gradient colored half-matrix
-    .render_mat_html <- function(mat, digits = 4, thr = c(0.05, 0.15, 0.25),
-                                  clrs = c("#f0fdf4", "#dcfce7", "#fefce8", "#fef2f2")) {
-      labs <- rownames(mat); n <- length(labs)
-      cell <- function(i, j) {
-        if (i == j) return('<td style="background:#f1f5f9;color:#94a3b8;text-align:center;padding:4px 9px;">\u2014</td>')
-        if (i < j)  return('<td style="color:#cbd5e1;text-align:center;padding:4px 9px;">\u00b7</td>')
-        v <- mat[i, j]
-        if (!is.finite(v)) return('<td style="color:#94a3b8;text-align:center;padding:4px 9px;">NA</td>')
-        bg <- clrs[findInterval(v, thr) + 1L]
-        sprintf('<td style="background:%s;text-align:right;padding:4px 9px;">%s</td>', bg, round(v, digits))
-      }
-      thead <- paste0('<tr><th></th>', paste(sprintf('<th style="padding:4px 9px;">%s</th>', labs[-n]), collapse = ""), '</tr>')
-      tbody <- paste(sapply(seq_len(n), function(i) {
-        if (i == 1L) return("")
-        paste0('<tr><td style="font-weight:700;white-space:nowrap;padding:4px 9px;">', labs[i], '</td>',
-               paste(sapply(seq_len(n), function(j) cell(i, j)), collapse = ""), '</tr>')
-      }), collapse = "")
-      HTML(sprintf('<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:11px;width:100%%;"><thead>%s</thead><tbody>%s</tbody></table></div>', thead, tbody))
+      uSq <- cosSqAlpha*(a^2 - b^2)/b^2
+      A <- 1 + uSq/16384*(4096 + uSq*(-768 + uSq*(320 - 175*uSq)))
+      B <- uSq/1024*(256 + uSq*(-128 + uSq*(74 - 47*uSq)))
+      deltaSigma <- B*sinSigma*(cos2SigmaM + B/4*(cosSigma*(-1 + 2*cos2SigmaM^2) -
+                    B/6*cos2SigmaM*(-3 + 4*sinSigma^2)*(-3 + 4*cos2SigmaM^2)))
+      b * A * (sigma - deltaSigma)
     }
 
-    .build_pair_matrix <- function(r, value_col) {
-      pops <- r$pops; n <- length(pops)
-      m <- matrix(NA_real_, n, n, dimnames = list(pops, pops))
-      for (k in seq_len(nrow(r$pair_df))) {
-        i <- which(pops == r$pair_df$Pop1[k]); j <- which(pops == r$pair_df$Pop2[k])
-        m[j, i] <- r$pair_df[[value_col]][k]
-      }
-      m
-    }
-
-    output$ui_fst_matrix <- renderUI({
-      r <- results_r()$res
-      typ <- input$fst_display %||% "both"
-      m_raw <- .build_pair_matrix(r, "FST_raw")
-      m_ena <- .build_pair_matrix(r, "FST_ENA")
-      if (identical(typ, "both"))
-        tags$div(tags$p(tags$strong("Raw")), .render_mat_html(m_raw), tags$br(),
-                 tags$p(tags$strong("ENA-corrected")), .render_mat_html(m_ena))
-      else if (identical(typ, "raw")) .render_mat_html(m_raw)
-      else .render_mat_html(m_ena)
-    })
-
-    fst_pair_ci_r <- reactive({
-      rr <- results_r(); r <- rr$res; boot <- rr$boot
-      df <- r$pair_df[, c("Pop1", "Pop2", "FST_raw", "FST_ENA")]
-      if (!is.null(boot)) {
-        df$CI_lo_raw <- round(boot$pair_raw_ci[, 1], 6); df$CI_hi_raw <- round(boot$pair_raw_ci[, 2], 6)
-        df$CI_lo_ena <- round(boot$pair_ena_ci[, 1], 6); df$CI_hi_ena <- round(boot$pair_ena_ci[, 2], 6)
-      }
-      df$FST_raw <- round(df$FST_raw, 6); df$FST_ENA <- round(df$FST_ENA, 6)
-      df
-    })
-    output$dt_fst_pair_ci <- DT::renderDT({
-      DT::datatable(fst_pair_ci_r(), rownames = FALSE,
-        options = list(pageLength = 25, scrollX = TRUE, dom = "lftip"),
-        class = "compact hover stripe")
-    })
-    output$dl_fst_pair_csv <- downloadHandler(
-      filename = function() paste0("pairwise_FST_FST-ENA_", Sys.Date(), ".csv"),
-      content  = function(file) write.csv(fst_pair_ci_r(), file, row.names = FALSE)
-    )
-
     # ══════════════════════════════════════════════════════════════════════
-    # TAB 3 — DCSE / DCSE-INA
+    #  FULL PAIRWISE TABLE — matches the reference layout exactly:
+    #  Pop1, Pop2, D_geo, FST-FreeNA(+CI), ln(D_geo), F_R(+CI), D_CSE-INA, D_CSE
+    #  Sourced ENTIRELY from rv$null_alleles_results — nothing recomputed here
+    #  except D_geo/ln(D_geo) (which the Null Alleles module doesn't compute).
     # ══════════════════════════════════════════════════════════════════════
-    output$ui_dc_matrix <- renderUI({
-      r <- results_r()$res
-      typ <- input$dc_display %||% "both"
-      thr <- c(0.1, 0.25, 0.4); clrs <- c("#eff6ff", "#dbeafe", "#fef9c3", "#fef2f2")
-      m_raw <- .build_pair_matrix(r, "DCSE_raw")
-      m_ina <- .build_pair_matrix(r, "DCSE_INA")
-      if (identical(typ, "both"))
-        tags$div(tags$p(tags$strong("Raw")), .render_mat_html(m_raw, thr = thr, clrs = clrs), tags$br(),
-                 tags$p(tags$strong("INA-corrected")), .render_mat_html(m_ina, thr = thr, clrs = clrs))
-      else if (identical(typ, "raw")) .render_mat_html(m_raw, thr = thr, clrs = clrs)
-      else .render_mat_html(m_ina, thr = thr, clrs = clrs)
-    })
-
-    dc_pair_ci_r <- reactive({
-      rr <- results_r(); r <- rr$res; boot <- rr$boot
-      df <- r$pair_df[, c("Pop1", "Pop2", "DCSE_raw", "DCSE_INA")]
-      if (!is.null(boot)) {
-        df$CI_lo_raw <- round(boot$dc_raw_ci[, 1], 6); df$CI_hi_raw <- round(boot$dc_raw_ci[, 2], 6)
-        df$CI_lo_ina <- round(boot$dc_ena_ci[, 1], 6); df$CI_hi_ina <- round(boot$dc_ena_ci[, 2], 6)
-      }
-      df$DCSE_raw <- round(df$DCSE_raw, 6); df$DCSE_INA <- round(df$DCSE_INA, 6)
-      df
-    })
-    output$dt_dc_pair_ci <- DT::renderDT({
-      DT::datatable(dc_pair_ci_r(), rownames = FALSE,
-        options = list(pageLength = 25, scrollX = TRUE, dom = "lftip"),
-        class = "compact hover stripe")
-    })
-    output$dl_dc_pair_csv <- downloadHandler(
-      filename = function() paste0("pairwise_DCSE_DCSE-INA_", Sys.Date(), ".csv"),
-      content  = function(file) write.csv(dc_pair_ci_r(), file, row.names = FALSE)
-    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # TAB 4 — Per-locus x pair
-    # ══════════════════════════════════════════════════════════════════════
-    locus_pair_table_r <- reactive({
-      r <- results_r()$res
-      npairs <- nrow(r$pair_df)
-      rows <- vector("list", npairs * r$nloc); k <- 1L
-      for (pi in seq_len(npairs)) {
-        for (li in seq_len(r$nloc)) {
-          a1 <- r$w_s1_raw_pair[pi, li]; a3 <- r$w_s3_raw_pair[pi, li]
-          a1e<- r$w_s1_ena_pair[pi, li]; a3e<- r$w_s3_ena_pair[pi, li]
-          rows[[k]] <- data.frame(
-            Locus = r$loci[li], Pop1 = r$pair_df$Pop1[pi], Pop2 = r$pair_df$Pop2[pi],
-            FST_raw  = if (a3 != 0)  round(a1 / a3, 6)   else NA_real_,
-            FST_ENA  = if (a3e != 0) round(a1e / a3e, 6) else NA_real_,
-            DCSE_raw = round(r$dc_raw_pair[pi, li], 6),
-            DCSE_INA = round(r$dc_ena_pair[pi, li], 6),
-            stringsAsFactors = FALSE)
-          k <- k + 1L
-        }
-      }
-      do.call(rbind, rows)
-    })
-
-    output$dt_locus_pair <- DT::renderDT({
-      df <- locus_pair_table_r()
-      sl <- input$fl_locus %||% "all"; sp1 <- input$fl_pop1 %||% "all"; sp2 <- input$fl_pop2 %||% "all"
-      if (!identical(sl, "all"))  df <- df[df$Locus == sl, , drop = FALSE]
-      if (!identical(sp1, "all")) df <- df[df$Pop1 == sp1 | df$Pop2 == sp1, , drop = FALSE]
-      if (!identical(sp2, "all")) df <- df[df$Pop2 == sp2 | df$Pop1 == sp2, , drop = FALSE]
-      shiny::validate(shiny::need(nrow(df) > 0L, "No rows for selected filters."))
-      DT::datatable(df, rownames = FALSE,
-        options = list(pageLength = 25, scrollX = TRUE, dom = "lftip"),
-        class = "compact hover stripe")
-    })
-    output$dl_locus_pair_csv <- downloadHandler(
-      filename = function() paste0("per_locus_pair_", Sys.Date(), ".csv"),
-      content  = function(file) write.csv(locus_pair_table_r(), file, row.names = FALSE)
-    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # SHARED HELPER — full pairwise table (FST, FST-ENA, DCSE, DCSE-INA, FR,
-    # FR-ENA + bootstrap CI bounds, linearised) + Dgeo/lnDgeo if GPS present.
-    # Used by BOTH the Isolation by Distance tab and the Mantel tab.
-    # ══════════════════════════════════════════════════════════════════════
-
     .linearise <- function(x) { x <- pmin(pmax(x, 0), 0.9999); x / (1 - x) }
 
-    .haversine_km <- function(lat1, lon1, lat2, lon2) {
-      R <- 6371.0
-      dlat <- (lat2 - lat1) * pi / 180; dlon <- (lon2 - lon1) * pi / 180
-      a <- sin(dlat / 2)^2 + cos(lat1 * pi / 180) * cos(lat2 * pi / 180) * sin(dlon / 2)^2
-      2 * R * asin(sqrt(a))
-    }
-
     full_pair_table_r <- reactive({
-      rr <- results_r(); r <- rr$res; boot <- rr$boot
-      df <- r$pair_df[, c("Pop1", "Pop2", "FST_raw", "FST_ENA", "DCSE_raw", "DCSE_INA")]
+      na <- na_results_r()
+      fst_long <- na$fst_pair$long                     # Pop1,Pop2,FST_raw,FST_ENA,Delta_FST
+      dc_long  <- na$dc_pair$long                       # Pop1,Pop2,DCSE_raw,DCSE_INA,Delta_DCSE
+      bf       <- na$boot_pair_fst                      # Pop1,Pop2,FST_ENA_obs,CI_lo_loci,...,FST_raw_obs,CI_lo_raw,CI_hi_raw
+      bd       <- na$boot_pair_dc
 
-      if (!is.null(boot)) {
-        df$FST_raw_lo <- boot$pair_raw_ci[, 1]; df$FST_raw_hi <- boot$pair_raw_ci[, 2]
-        df$FST_ENA_lo <- boot$pair_ena_ci[, 1]; df$FST_ENA_hi <- boot$pair_ena_ci[, 2]
+      df <- merge(fst_long, dc_long[, c("Pop1","Pop2","DCSE_raw","DCSE_INA")],
+                  by = c("Pop1","Pop2"), sort = FALSE)
+
+      if (!is.null(bf) && nrow(bf) > 0L) {
+        bf2 <- bf[, c("Pop1","Pop2","CI_lo_raw","CI_hi_raw","CI_lo_loci","CI_hi_loci")]
+        names(bf2)[3:6] <- c("FST_raw_lo","FST_raw_hi","FST_ENA_lo","FST_ENA_hi")
+        df <- merge(df, bf2, by = c("Pop1","Pop2"), sort = FALSE)
       } else {
         df$FST_raw_lo <- NA_real_; df$FST_raw_hi <- NA_real_
         df$FST_ENA_lo <- NA_real_; df$FST_ENA_hi <- NA_real_
       }
+      if (!is.null(bd) && nrow(bd) > 0L) {
+        bd2 <- bd[, c("Pop1","Pop2","CI_lo_raw","CI_hi_raw","CI_lo_loci","CI_hi_loci")]
+        names(bd2)[3:6] <- c("DCSE_raw_lo","DCSE_raw_hi","DCSE_INA_lo","DCSE_INA_hi")
+        df <- merge(df, bd2, by = c("Pop1","Pop2"), sort = FALSE)
+      } else {
+        df$DCSE_raw_lo <- NA_real_; df$DCSE_raw_hi <- NA_real_
+        df$DCSE_INA_lo <- NA_real_; df$DCSE_INA_hi <- NA_real_
+      }
 
-      # Rousset's FR = FST/(1-FST); CI bounds linearised too (monotonic transform)
-      df$FR     <- .linearise(df$FST_raw)
-      df$FR_lo  <- .linearise(df$FST_raw_lo)
-      df$FR_hi  <- .linearise(df$FST_raw_hi)
-      df$FR_ENA    <- .linearise(df$FST_ENA)
-      df$FR_ENA_lo <- .linearise(df$FST_ENA_lo)
-      df$FR_ENA_hi <- .linearise(df$FST_ENA_hi)
+      # Rousset's FR = FST/(1-FST) — reference "F_R" is based on FST-ENA
+      # ("FST-FreeNA"); FR based on raw FST is kept too (model choice = "raw").
+      df$FR        <- .linearise(df$FST_ENA)
+      df$FR_lo     <- .linearise(df$FST_ENA_lo)
+      df$FR_hi     <- .linearise(df$FST_ENA_hi)
+      df$FR_raw    <- .linearise(df$FST_raw)
+      df$FR_raw_lo <- .linearise(df$FST_raw_lo)
+      df$FR_raw_hi <- .linearise(df$FST_raw_hi)
 
-      # Geographic distance, if GPS available
+      # Geographic distance (Vincenty, metres), if GPS available
       coords <- tryCatch(coords_r(), error = function(e) NULL)
       if (!is.null(coords)) {
         get_d <- function(p1, p2) {
           c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
           if (nrow(c1) >= 1L && nrow(c2) >= 1L)
-            .haversine_km(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
+            .vincenty_m(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
           else NA_real_
         }
-        df$Dgeo_km <- mapply(get_d, df$Pop1, df$Pop2)
-        df$lnDgeo  <- ifelse(df$Dgeo_km > 0, log(df$Dgeo_km), NA_real_)
+        df$Dgeo_m <- mapply(get_d, df$Pop1, df$Pop2)
+        df$lnDgeo <- ifelse(df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
       } else {
-        df$Dgeo_km <- NA_real_; df$lnDgeo <- NA_real_
+        df$Dgeo_m <- NA_real_; df$lnDgeo <- NA_real_
       }
 
       df
     })
 
     # ══════════════════════════════════════════════════════════════════════
-    # TAB 5 — Isolation by Distance (Rousset 1997)
+    #  TAB 1 — Isolation by Distance (Rousset 1997)  [now the FIRST tab]
     # ══════════════════════════════════════════════════════════════════════
 
     .fit_line <- function(y, x) {
@@ -478,44 +211,86 @@ server_isolation_by_distance <- function(id, rv) {
     ibd_results_r <- eventReactive(input$run_ibd, {
       df <- full_pair_table_r()
       shiny::validate(shiny::need(
-        any(is.finite(df$Dgeo_km)),
+        any(is.finite(df$Dgeo_m)),
         "No geographic distances available. Set Latitude/Longitude at import for at least 2 populations."))
 
       use_log <- identical(input$ibd_model, "2D")
-      x <- if (use_log) df$lnDgeo else df$Dgeo_km
-      x_label <- if (use_log) "ln(Dgeo)" else "Dgeo (km)"
+      x <- if (use_log) df$lnDgeo else df$Dgeo_m
+      x_label <- if (use_log) "ln(D_geo)" else "D_geo (m)"
 
-      if (identical(input$ibd_metric, "ena")) {
-        y_avg <- df$FR_ENA; y_lo <- df$FR_ENA_lo; y_hi <- df$FR_ENA_hi
-        y_label <- "FR-ENA"
+      if (identical(input$ibd_metric, "raw")) {
+        y_avg <- df$FR_raw; y_lo <- df$FR_raw_lo; y_hi <- df$FR_raw_hi
+        y_label <- "F_R (raw FST)"
       } else {
         y_avg <- df$FR; y_lo <- df$FR_lo; y_hi <- df$FR_hi
-        y_label <- "FR"
+        y_label <- "F_R (FST-ENA)"
       }
 
       reg_avg <- .fit_line(y_avg, x)
       reg_lo  <- .fit_line(y_lo,  x)
       reg_hi  <- .fit_line(y_hi,  x)
 
+      # Nb = 1/slope, Nem = Nb/(2*pi) — using the DISPLAYED (4-decimal-rounded)
+      # slope, matching the reference tool's own convention.
+      nbnem <- function(reg) {
+        b <- round(reg$slope, 4)
+        if (is.na(b) || b == 0) return(c(b = b, Nb = NA_real_, Nem = NA_real_))
+        Nb <- 1 / b
+        c(b = b, Nb = Nb, Nem = Nb / (2 * pi))
+      }
+      summ <- rbind(
+        c(Line = "Average",  nbnem(reg_avg)),
+        c(Line = "95%CI-i",  nbnem(reg_lo)),
+        c(Line = "95%CI-s",  nbnem(reg_hi))
+      )
+
       list(df = df, x = x, y_avg = y_avg, y_lo = y_lo, y_hi = y_hi,
            x_label = x_label, y_label = y_label,
            reg_avg = reg_avg, reg_lo = reg_lo, reg_hi = reg_hi,
-           use_log = use_log, metric = input$ibd_metric)
+           summary = summ, use_log = use_log, metric = input$ibd_metric)
     })
 
+    # Full reference-style table: Pop1, Pop2, D_geo, FST-FreeNA(+CI),
+    # ln(D_geo), F_R(+CI), D_CSE-INA, D_CSE — displayed completely, in the
+    # same column order as the reference tool.
+    output$dt_ibd_table <- DT::renderDT({
+      r <- ibd_results_r()
+      d <- r$df
+      out <- data.frame(
+        Farm1          = d$Pop1,
+        Farm2          = d$Pop2,
+        D_geo          = round(d$Dgeo_m, 4),
+        `FST-FreeNA`   = round(d$FST_ENA, 6),
+        `FST-FreeNA-i` = round(d$FST_ENA_lo, 6),
+        `FST-FreeNA-s` = round(d$FST_ENA_hi, 6),
+        `ln(D_geo)`    = round(d$lnDgeo, 6),
+        F_R            = round(d$FR, 6),
+        `F_R-i`        = round(d$FR_lo, 6),
+        `F_R-s`        = round(d$FR_hi, 6),
+        `D_CSE-INA`    = round(d$DCSE_INA, 6),
+        D_CSE          = round(d$DCSE_raw, 6),
+        check.names = FALSE, stringsAsFactors = FALSE
+      )
+      DT::datatable(out, rownames = FALSE,
+        options = list(scrollX = TRUE, pageLength = 28, dom = "lrtip"),
+        class = "compact stripe hover") |>
+        DT::formatRound(c("D_geo","FST-FreeNA","FST-FreeNA-i","FST-FreeNA-s",
+                           "ln(D_geo)","F_R","F_R-i","F_R-s","D_CSE-INA","D_CSE"), 6)
+    })
+    output$dl_ibd_csv <- downloadHandler(
+      filename = function() paste0("IBD_pairwise_", Sys.Date(), ".csv"),
+      content  = function(file) write.csv(ibd_results_r()$df, file, row.names = FALSE)
+    )
+
+    # Regression summary: slope (b) / Nb / Nem for the 3 fitted lines
     output$dt_ibd_reg <- DT::renderDT({
       r <- ibd_results_r()
-      fmt <- function(x) if (is.na(x)) "NA" else formatC(x, format = "f", digits = 6)
-      tab <- data.frame(
-        Line      = c(paste0(r$y_label, " (point estimate)"),
-                       paste0(r$y_label, "-l (lower CI)"),
-                       paste0(r$y_label, "-u (upper CI)")),
-        Slope     = c(fmt(r$reg_avg$slope), fmt(r$reg_lo$slope), fmt(r$reg_hi$slope)),
-        Intercept = c(fmt(r$reg_avg$intercept), fmt(r$reg_lo$intercept), fmt(r$reg_hi$intercept)),
-        R2        = c(fmt(r$reg_avg$r2), fmt(r$reg_lo$r2), fmt(r$reg_hi$r2)),
-        stringsAsFactors = FALSE
-      )
-      DT::datatable(tab, rownames = FALSE,
+      s <- as.data.frame(r$summary, stringsAsFactors = FALSE)
+      s$b   <- round(as.numeric(s$b), 4)
+      s$Nb  <- round(as.numeric(s$Nb), 4)
+      s$Nem <- round(as.numeric(s$Nem), 4)
+      names(s) <- c("slope", "b", "Nb", "Nem")
+      DT::datatable(s, rownames = FALSE,
         options = list(dom = "t", pageLength = 3, ordering = FALSE),
         class = "compact stripe")
     })
@@ -577,22 +352,8 @@ server_isolation_by_distance <- function(id, rv) {
         margin = list(t = 30))
     })
 
-    output$dt_ibd_table <- DT::renderDT({
-      r <- ibd_results_r()
-      df <- r$df[, c("Pop1", "Pop2", "Dgeo_km", "lnDgeo", "FR", "FR_lo", "FR_hi", "FR_ENA", "FR_ENA_lo", "FR_ENA_hi")]
-      num_cols <- setdiff(names(df), c("Pop1", "Pop2"))
-      df[num_cols] <- lapply(df[num_cols], round, 5)
-      DT::datatable(df, rownames = FALSE,
-        options = list(scrollX = TRUE, pageLength = 10, dom = "lrtip"),
-        class = "compact stripe hover")
-    })
-    output$dl_ibd_csv <- downloadHandler(
-      filename = function() paste0("IBD_pairwise_", Sys.Date(), ".csv"),
-      content  = function(file) write.csv(ibd_results_r()$df, file, row.names = FALSE)
-    )
-
     # ══════════════════════════════════════════════════════════════════════
-    # TAB 6 — Mantel test (joint row/column permutation; rectangular-safe)
+    #  TAB 2 — Mantel test (joint row/column permutation; rectangular-safe)
     # ══════════════════════════════════════════════════════════════════════
 
     .mt_build_square <- function(df, id1, id2, value_col, all_labels) {
@@ -605,6 +366,14 @@ server_isolation_by_distance <- function(id, rv) {
       m
     }
 
+    # Generic Mantel permutation test: joint row/column relabelling of one
+    # matrix (valid on rectangular/incomplete matrices too), Pearson r or
+    # Rousset regression slope as the statistic.
+    # p-value = (b+1)/(m+1)  [b = permuted statistics >= observed, m = total
+    # valid permutations] — the standard correction that avoids ever reporting
+    # p = 0 (Davison & Hinkley 1997; also the Fstat/RT convention this module
+    # documents). Previously the code computed a plain proportion with no
+    # +1/+1 correction — fixed here to match the method actually documented.
     .mt_mantel_matrix <- function(mat1, mat2, n_perm = 9999L, stat = "r") {
       common <- intersect(rownames(mat1), rownames(mat2))
       if (length(common) < 3L)
@@ -627,9 +396,17 @@ server_isolation_by_distance <- function(id, rv) {
         stat_fn(x_all, m2p[lower_idx])
       }, numeric(1L))
       perm_fin <- perm_stats[is.finite(perm_stats)]
-      p_pos <- if (length(perm_fin) > 0L && is.finite(stat_obs)) mean(perm_fin >= stat_obs) else NA_real_
+      m_valid  <- length(perm_fin)
+      if (m_valid > 0L && is.finite(stat_obs)) {
+        b_pos <- sum(perm_fin >= stat_obs)
+        b_neg <- sum(perm_fin <= stat_obs)
+        p_pos <- (b_pos + 1) / (m_valid + 1)
+        p_neg <- (b_neg + 1) / (m_valid + 1)
+      } else {
+        p_pos <- NA_real_; p_neg <- NA_real_
+      }
       lm0 <- tryCatch(lm(y_all[ok_obs] ~ x_all[ok_obs]), error = function(e) NULL)
-      list(stat_obs = stat_obs, p_pos = p_pos, p_neg = 1 - p_pos, n_pairs = sum(ok_obs),
+      list(stat_obs = stat_obs, p_pos = p_pos, p_neg = p_neg, n_pairs = sum(ok_obs),
            slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
            intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
            r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
@@ -696,7 +473,7 @@ server_isolation_by_distance <- function(id, rv) {
       df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       selectInput(session$ns("mt_col_y"), "Y column:", choices = cols,
-                  selected = .guess_col(cols, c("^FR_ENA$", "^FR$", "FST_ENA", "DCSE"),
+                  selected = .guess_col(cols, c("^FR$", "^FR_raw$", "FST_ENA", "DCSE_INA"),
                                         if (length(cols) >= 2L) cols[2] else NULL))
     })
 
@@ -752,7 +529,7 @@ server_isolation_by_distance <- function(id, rv) {
       r <- mantel_result_r(); pv <- r$p_pos
       col <- if (is.na(pv)) "yellow" else if (pv < 0.05) "green" else if (pv < 0.10) "yellow" else "red"
       valueBox(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4),
-               HTML("p-value<br>(one-sided)"), icon = icon("check-circle"), color = col)
+               HTML("p-value<br>(one-sided, (b+1)/(m+1))"), icon = icon("check-circle"), color = col)
     })
     output$box_m_n <- renderValueBox({
       valueBox(mantel_result_r()$n_pairs, "Pairs used", icon = icon("project-diagram"), color = "blue")
@@ -767,6 +544,8 @@ server_isolation_by_distance <- function(id, rv) {
       r <- mantel_result_r()
       tags$div(style = "margin-top:8px; font-family:monospace; font-size:12px; color:#555;",
         sprintf("Slope = %.6f, Intercept = %.6f", r$slope, r$intercept), tags$br(),
+        sprintf("One-sided p (positive association, IBD) = %s",
+                if (is.na(r$p_pos)) "NA" else formatC(r$p_pos, format = "f", digits = 4)), tags$br(),
         sprintf("One-sided p (negative association) = %s",
                 if (is.na(r$p_neg)) "NA" else formatC(r$p_neg, format = "f", digits = 4)), tags$br(),
         sprintf("Common populations: %d \u2014 %s", length(r$common), paste(r$common, collapse = ", "))

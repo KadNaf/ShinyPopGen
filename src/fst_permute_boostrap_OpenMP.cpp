@@ -2,6 +2,38 @@
 // fst_permute_boostrap_OpenMP.cpp
 // R-free OpenMP kernels + thin Rcpp wrappers.
 // ============================================================================
+//
+// RNG / REPRODUCIBILITY NOTE (added following a code audit, see thesis/
+// publication material - keep in sync with fis_permute_bootstrap_wc.cpp and
+// fit_permute_bootstrap_wc.cpp, which use a DIFFERENT scheme):
+//
+//   This file uses std::mt19937_64, seeded per-thread as a function of the
+//   `seed` parameter (see e.g. `std::mt19937_64 rng(sb)` below). This is safe
+//   to call from inside an OpenMP parallel region (unlike R's own RNG, which
+//   is NOT thread-safe - see the note in fis_permute_bootstrap_wc.cpp).
+//
+//   Reproducibility claim: for a FIXED `seed` AND a FIXED `n_threads`
+//   (equivalently, a fixed static/dynamic OpenMP scheduling and chunking),
+//   results are deterministic. Changing `n_threads` between two runs with
+//   the same `seed` can change which permutations/bootstrap draws are
+//   assigned to which thread-local generator, and therefore CAN change the
+//   exact bootstrap replicates drawn (though not their statistical
+//   properties). If exact bit-for-bit reproducibility across machines with
+//   different core counts is claimed in the publication, it must be
+//   verified explicitly against this scheme, e.g. by re-running the same
+//   analysis with n_threads = 1 and n_threads > 1 and comparing full
+//   bootstrap distributions (not just summary CIs).
+//
+//   This is in contrast to fis_permute_bootstrap_wc.cpp / 
+//   fit_permute_bootstrap_wc.cpp, whose permutation loops use R's own
+//   R::unif_rand() (reproducible via set.seed() from R, but explicitly NOT
+//   parallelised for that reason - see the comment there). The two
+//   estimator families (FST here vs FIS/FIT there) are therefore NOT
+//   currently on a unified RNG scheme; harmonizing them (e.g. by moving all
+//   three to a common thread-safe, seed-per-replicate scheme) is flagged in
+//   the accompanying audit as a P1 item and should be done as a dedicated,
+//   test-covered change rather than inside an unrelated fix.
+// ============================================================================
 
 // [[Rcpp::plugins(cpp17)]]
 // [[Rcpp::depends(Rcpp)]]

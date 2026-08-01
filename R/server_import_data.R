@@ -1,5 +1,3 @@
-
-
 server_import_data <- function(id, rv) {
   
   shiny::moduleServer(id, function(input, output, session) {
@@ -110,7 +108,7 @@ server_import_data <- function(id, rv) {
             radius = ~radius_px,
             stroke = FALSE,
             fillOpacity = 0.7,
-            popup = ~paste0("Location: ", htmltools::htmlEscape(Population), "<br>Population size: ", Population_size)
+            popup = ~paste0("Location: ", Population, "<br>Population size: ", Population_size)
           )
 
         lng_rng <- range(populationsLL_grouped$Longitude, na.rm = TRUE)
@@ -578,7 +576,7 @@ server_import_data <- function(id, rv) {
             lng = ~Longitude, lat = ~Latitude,
             radius = ~radius_px,
             stroke = FALSE, fillOpacity = 0.7,
-            popup = ~paste0("Location: ", htmltools::htmlEscape(Population),
+            popup = ~paste0("Location: ", Population,
                             "<br>Population size: ", Population_size)
           ) %>%
           leaflet::fitBounds(

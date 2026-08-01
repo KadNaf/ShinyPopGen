@@ -11,6 +11,21 @@ server_allele_frequencies <- function(id, rv) {
     sql_id  <- function(con, x) as.character(DBI::dbQuoteIdentifier(con, x))
     sql_str <- function(con, x) as.character(DBI::dbQuoteString(con, x))
 
+    # ── Defensive DB wrapper ─────────────────────────────────────────────────
+    # Converts any DBI/DuckDB error (dropped connection, unexpected schema,
+    # malformed query) into a clean shiny::validate() message instead of an
+    # uncaught R error propagating to the UI. Wrap every dbGetQuery()/
+    # dbExecute() call that depends on user-supplied data through this.
+    db_try <- function(expr, context = "requete base de donnees") {
+      tryCatch(
+        expr,
+        error = function(e) {
+          shiny::validate(shiny::need(FALSE,
+            sprintf("Erreur lors de %s : %s", context, conditionMessage(e))))
+        }
+      )
+    }
+
     # ── Reactive plumbing ──────────────────────────────────────────────────
     db_tick    <- reactive({ rv$db_tick })
     con_r      <- reactive({ req(rv$con); rv$con })
@@ -54,8 +69,9 @@ server_allele_frequencies <- function(id, rv) {
 
     hf_schema_r <- reactive({
       db_ready(); con <- con_r()
-      info <- DBI::dbGetQuery(con,
-        sprintf("PRAGMA table_info(%s)", DBI::dbQuoteIdentifier(con, tbl_hf_r())))
+      info <- db_try(DBI::dbGetQuery(con,
+        sprintf("PRAGMA table_info(%s)", DBI::dbQuoteIdentifier(con, tbl_hf_r()))),
+        "la lecture du schema de la table hf")
       cols <- info$name
       if (all(c("individual","locus","g") %in% cols))
         return(list(ind_col="individual", locus_col="locus",    gt_col="g"))
@@ -67,8 +83,9 @@ server_allele_frequencies <- function(id, rv) {
 
     meta_schema_r <- reactive({
       db_ready(); con <- con_r()
-      info <- DBI::dbGetQuery(con,
-        sprintf("PRAGMA table_info(%s)", DBI::dbQuoteIdentifier(con, tbl_meta_r())))
+      info <- db_try(DBI::dbGetQuery(con,
+        sprintf("PRAGMA table_info(%s)", DBI::dbQuoteIdentifier(con, tbl_meta_r()))),
+        "la lecture du schema de la table meta")
       cols    <- info$name
       ind_col <- if ("individual" %in% cols) "individual"
                  else if ("indiv_id" %in% cols) "indiv_id"
@@ -90,23 +107,23 @@ server_allele_frequencies <- function(id, rv) {
     # ── Population / marker lists ──────────────────────────────────────────
     pops_r <- reactive({
       db_ready(); con <- con_r(); ms <- meta_schema_r()
-      as.character(DBI::dbGetQuery(con, sprintf(
+      as.character(db_try(DBI::dbGetQuery(con, sprintf(
         "SELECT DISTINCT CAST(%s AS VARCHAR) AS p FROM %s
          WHERE %s IS NOT NULL ORDER BY p",
         sql_id(con,ms$pop_col), sql_id(con,tbl_meta_r()),
-        sql_id(con,ms$pop_col)))$p)
+        sql_id(con,ms$pop_col))), "la liste des populations")$p)
     })
 
     markers_r <- reactive({
       db_ready(); con <- con_r(); hs <- hf_schema_r()
       hf_q <- sql_id(con,tbl_hf_r()); hl_q <- sql_id(con,hs$locus_col)
-      as.character(DBI::dbGetQuery(con, sprintf("
+      as.character(db_try(DBI::dbGetQuery(con, sprintf("
         WITH %s
         SELECT DISTINCT CAST(%s AS VARCHAR) AS Marker, lo._lo_rank
         FROM %s h LEFT JOIN locus_order lo
           ON CAST(%s AS VARCHAR)=lo._lo_marker
         ORDER BY lo._lo_rank ASC",
-        locus_order_cte(con,hf_q,hl_q), hl_q, hf_q, hl_q))$Marker)
+        locus_order_cte(con,hf_q,hl_q), hl_q, hf_q, hl_q)), "la liste des marqueurs")$Marker)
     })
 
     observe({
@@ -132,7 +149,7 @@ server_allele_frequencies <- function(id, rv) {
       hi_q <- sql_id(con,hs$ind_col); hl_q <- sql_id(con,hs$locus_col)
       hg_q <- sql_id(con,hs$gt_col);  mi_q <- sql_id(con,ms$ind_col)
       pop_q <- sql_id(con,ms$pop_col)
-      DBI::dbGetQuery(con, sprintf("
+      db_try(DBI::dbGetQuery(con, sprintf("
         WITH %s,
         base AS (
           SELECT CAST(m.%s AS VARCHAR) AS Population,
@@ -150,7 +167,7 @@ server_allele_frequencies <- function(id, rv) {
         ORDER BY b.Population, lo._lo_rank ASC",
         locus_order_cte(con,hf_q,hl_q),
         pop_q,hl_q, hg_q,hg_q, hg_q,hg_q, hg_q,hg_q,
-        hf_q,meta_q, hi_q,mi_q, pop_q,pop_q,hl_q))
+        hf_q,meta_q, hi_q,mi_q, pop_q,pop_q,hl_q)), "le calcul des donnees manquantes")
     })
 
     # ── Fstat long reactive ────────────────────────────────────────────────
@@ -168,7 +185,7 @@ server_allele_frequencies <- function(id, rv) {
       mark_f <- if (!identical(fstat_marker_r(),"all"))
         sprintf("AND CAST(h.%s AS VARCHAR)=%s",hl_q,sql_str(con,fstat_marker_r())) else ""
 
-      DBI::dbGetQuery(con, sprintf("
+      db_try(DBI::dbGetQuery(con, sprintf("
 WITH %s,
 valid_gt AS (
   SELECT CAST(m.%s AS VARCHAR) AS Population,
@@ -237,7 +254,7 @@ ORDER BY lo._lo_rank ASC, f.Population, f.Allele",
         pop_q,hg_q,hg_q, pop_f,mark_f,
         base,base, base,base, base,base,
         pop_q,hl_q, hg_q,hg_q, hg_q,hg_q,
-        hf_q,meta_q,hi_q,mi_q, pop_q,pop_f,mark_f, pop_q,hl_q))
+        hf_q,meta_q,hi_q,mi_q, pop_q,pop_f,mark_f, pop_q,hl_q)), "le calcul des frequences alleliques")
     })
 
     # ── Pivot to wide display ──────────────────────────────────────────────
@@ -362,10 +379,10 @@ function(row,data,index){
     # ── Value boxes ────────────────────────────────────────────────────────
     n_individuals_r <- reactive({
       db_ready(); con <- con_r(); ms <- meta_schema_r()
-      DBI::dbGetQuery(con, sprintf(
+      db_try(DBI::dbGetQuery(con, sprintf(
         "SELECT COUNT(DISTINCT CAST(%s AS VARCHAR)) AS n FROM %s WHERE %s IS NOT NULL",
         sql_id(con,ms$ind_col), sql_id(con,tbl_meta_r()),
-        sql_id(con,ms$ind_col)))$n[[1]]
+        sql_id(con,ms$ind_col))), "le comptage des individus")$n[[1]]
     })
     n_populations_r <- reactive({ length(pops_r()) })
     n_markers_r     <- reactive({ length(markers_r()) })

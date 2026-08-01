@@ -2,6 +2,17 @@
 //fit_fst_hi_hs.cpp
 // Optimized version with better memory management and performance
 // ============================================================================
+//
+// RNG / REPRODUCIBILITY NOTE (added following a code audit; see the matching
+// note in fis_permute_bootstrap_wc.cpp for the full explanation): this file
+// draws permutation randomness via R::unif_rand() (reproducible via
+// set.seed(), NOT thread-safe, hence not parallelised for those loops -
+// see "Permutation RNG: R::unif_rand() (reproducible via set.seed())"
+// below). This differs from fst_permute_boostrap_OpenMP.cpp, which uses a
+// thread-local std::mt19937_64 and IS parallelised. Do not harmonize the two
+// schemes without re-validating numerically against reference software
+// (see tests/testthat/test-numeric-validation-fst.R).
+// ============================================================================
 // [[Rcpp::plugins(cpp17)]]
 // [[Rcpp::depends(Rcpp)]]
 // [[Rcpp::plugins(openmp)]]

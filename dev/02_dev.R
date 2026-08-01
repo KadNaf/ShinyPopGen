@@ -14,4 +14,4 @@ devtools::document()
 devtools::check()
 
 # Launch the app locally
-shinypopgen::run_app()
+SPG1::run_app()

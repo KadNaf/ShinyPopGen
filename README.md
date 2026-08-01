@@ -10,10 +10,9 @@ All dependencies install automatically:
 
 ```r
 install.packages("remotes")
-remotes::install_git(
-  "https://forge.ird.fr/intertryp/shinypopgen.git",
-  upgrade = "never"
-)
+
+remotes::install_github("KadNaf/SPG1")
+
 shinypopgen::run_app()
 ```
 
@@ -58,7 +57,7 @@ docker compose up
 
 ## Citation
 
-> Manzanilla V, Kadiri N, de Meeüs T. ShinyPopGen: an interactive Shiny application for population genetics data import, exploration, and descriptive analyses. IRD / CIRAD / INTERTRYP.
+> IRD / CIRAD / INTERTRYP.
 
 ## Bugs & support
 

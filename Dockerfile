@@ -59,6 +59,15 @@ COPY . .
 # ── Build & install (compiles C++ with OpenMP via src/Makevars) ───────────
 RUN R CMD INSTALL --preclean .
 
+# ── Run as a non-root user ─────────────────────────────────────────────────
+# rocker/shiny already creates a low-privilege "shiny" user for shiny-server;
+# reuse it here so the app never runs as root inside the container. Give it
+# ownership of the DuckDB working directory / tmp so writes at runtime don't
+# fail once we've dropped root.
+RUN mkdir -p /home/shiny/spg-data && chown -R shiny:shiny /home/shiny/spg-data
+USER shiny
+WORKDIR /home/shiny
+
 # ── Entry point ───────────────────────────────────────────────────────────
 EXPOSE 3838
 CMD ["R", "-e", "options(shiny.host='0.0.0.0', shiny.port=3838); shinypopgen::run_app()"]

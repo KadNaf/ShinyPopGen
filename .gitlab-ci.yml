@@ -8,8 +8,47 @@
 #                (to push a branch and open a MR on skat3/apps)
 
 stages:
+  - test
   - build
   - deploy
+
+# ── Stage 0: R CMD check + testthat (smoke + numeric-validation tests) ──────
+# Previously this pipeline went straight from "build" to "deploy": a broken
+# app (or, worse, a silently wrong FST/FIS estimator) could be built into an
+# image and deployed with nothing in CI to catch it. This job fails the
+# pipeline before docker-build/open-mr run if R CMD check or testthat fails.
+r-tests:
+  stage: test
+  image: rocker/shiny:latest
+  variables:
+    R_PROFILE_USER: /dev/null
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends
+        libcurl4-openssl-dev libssl-dev libxml2-dev libfontconfig1-dev
+        libharfbuzz-dev libfribidi-dev libfreetype6-dev libpng-dev
+        libtiff5-dev libjpeg-dev libudunits2-dev libgdal-dev libgeos-dev
+        libproj-dev zlib1g-dev cmake ninja-build pandoc
+        && rm -rf /var/lib/apt/lists/*
+    - R -e "install.packages(c('remotes'), repos='https://cloud.r-project.org')"
+    - R -e "remotes::install_deps(dependencies = TRUE, repos = 'https://cloud.r-project.org')"
+  script:
+    - R CMD build . --no-build-vignettes
+    - R CMD check --no-manual --no-build-vignettes shinypopgen_*.tar.gz
+    - R -e "testthat::test_dir('tests/testthat', stop_on_failure = TRUE)"
+  artifacts:
+    when: always
+    paths:
+      - "*.Rcheck/00check.log"
+    expire_in: 1 week
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - R/**/*
+        - src/**/*
+        - inst/**/*
+        - tests/**/*
+        - DESCRIPTION
+        - NAMESPACE
 
 # ── Stage 1: build and push to GitLab registry ──────────────────────────────
 docker-build:

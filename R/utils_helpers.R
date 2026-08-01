@@ -30,158 +30,6 @@ gs_head <- function() {
     div.dataTables_length { margin-bottom: 10px; }
     div.dt-buttons { margin-top: 6px; margin-bottom: 8px; }
     table.dataTable th, table.dataTable td { white-space: nowrap; }
-    .spg-method-note {
-      background: #f8f9fa;
-      padding: 12px 16px;
-      margin: 0 0 20px 0;
-      border-left: 4px solid;
-      border-radius: 4px;
-      font-size: 14px;
-      line-height: 1.5;
-      color: #333a43;
-    }
-    
-    .btn-action-primary {
-      background: linear-gradient(135deg, #78B7C5 0%, #5A9BA8 100%);
-      border: none;
-      color: white;
-      border-radius: 6px;
-      padding: 8px 16px;
-      transition: all 0.3s ease;
-    }
-    
-    .btn-action-primary:hover {
-      background: linear-gradient(135deg, #5A9BA8 0%, #48808B 100%);
-      transform: translateY(-1px);
-      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-    }
-    
-    .btn-download-primary {
-      background: #78B7C5;
-      border: none;
-      color: white;
-      border-radius: 4px;
-      padding: 5px 12px;
-    }
-    
-    .btn-download-secondary {
-      background: #6c757d;
-      border: none;
-      color: white;
-      border-radius: 4px;
-      padding: 5px 12px;
-    }
-    
-    .af-vbox {
-      background: white;
-      border: 0.5px solid rgba(0,0,0,.1);
-      border-radius: 10px;
-      padding: .75rem 1rem;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 4px;
-    }
-    
-    .af-vbox-icon {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 15px;
-      flex-shrink: 0;
-    }
-    
-    .af-vbox-label {
-      font-size: 11px;
-      color: #6b7280;
-      margin-bottom: 1px;
-    }
-    
-    .section-title {
-      color: #333a43;
-      text-align: center;
-      margin: 30px 0 20px 0;
-      padding: 10px;
-      border-bottom: 2px solid #CEB175;
-    }
-
-    .btn-action-primary {
-      background: linear-gradient(135deg, #78B7C5 0%, #5A9BA8 100%);
-      border: none;
-      color: white;
-      border-radius: 6px;
-      padding: 8px 16px;
-      transition: all 0.3s ease;
-    }
-
-    .btn-action-primary:hover {
-      background: linear-gradient(135deg, #5A9BA8 0%, #48808B 100%);
-      transform: translateY(-1px);
-      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-    }
-
-    .btn-download-primary {
-      background: #78B7C5;
-      border: none;
-      color: white;
-      border-radius: 4px;
-      padding: 5px 12px;
-      width: 100%;
-    }
-
-    .btn-download-secondary {
-      background: #6c757d;
-      border: none;
-      color: white;
-      border-radius: 4px;
-      padding: 5px 12px;
-      width: 100%;
-    }
-
-    .af-vbox {
-      background: white;
-      border: 0.5px solid rgba(0,0,0,.1);
-      border-radius: 10px;
-      padding: .75rem 1rem;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 4px;
-    }
-
-    .af-vbox-icon {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 15px;
-      flex-shrink: 0;
-    }
-
-    .af-vbox-label {
-      font-size: 11px;
-      color: #6b7280;
-      margin-bottom: 1px;
-    }
-
-    .af-vbox-val {
-      font-size: 22px;
-      font-weight: 500;
-      line-height: 1.1;
-    }
-
-    .section-title {
-      color: #333a43;
-      text-align: center;
-      margin: 30px 0 20px 0;
-      padding: 10px;
-      border-bottom: 2px solid #CEB175;
-    }
   ")),
     tags$script(HTML("
     $(document).on('shown.bs.tab', 'a[data-toggle=\"tab\"]', function () {
@@ -413,33 +261,63 @@ module_banner <- function(icon_name, title, subtitle, accent = "#6B64EF") {
   invisible(TRUE)
 }
 
-
-
 infer_base_from_marker_strings <- function(marker_df, sep = "/", sample_n = 5000L, default_base = 1000L) {
-  # marker_df: data.frame of character-ish genotype strings
   x <- unlist(marker_df, use.names = FALSE)
   x <- x[!is.na(x)]
   x <- trimws(as.character(x))
   x <- x[nzchar(x)]
   if (!length(x)) return(as.integer(default_base))
-  
-  # sample to keep it cheap
+
   if (length(x) > sample_n) x <- sample(x, sample_n)
-  
-  # keep only strings with sep and digits
-  x <- x[grepl("/", x, fixed = TRUE)]
-  if (!length(x)) return(as.integer(default_base))
-  
-  a <- suppressWarnings(as.integer(sub("/.*$", "", x)))
-  b <- suppressWarnings(as.integer(sub("^.*/", "", x)))
-  v <- max(c(a, b), na.rm = TRUE)
-  if (!is.finite(v) || v <= 0) return(as.integer(default_base))
-  
-  # base must be > max allele. your previous logic used 10^width, which is fine.
-  width <- nchar(as.character(v))
-  as.integer(10L ^ width)
+
+  # ── Cas 1 : format "a1/a2" (fichiers string diploid) ─────────────────────
+  x_sep <- x[grepl("/", x, fixed = TRUE)]
+  if (length(x_sep)) {
+    a <- suppressWarnings(as.integer(sub("/.*$",  "", x_sep)))
+    b <- suppressWarnings(as.integer(sub("^.*/", "", x_sep)))
+    v <- max(c(a, b), na.rm = TRUE)
+    if (is.finite(v) && v > 0) {
+      return(as.integer(10L ^ nchar(as.character(v))))
+    }
+  }
+
+  # ── Cas 2 : entiers bruts (fichiers Create/Genetix, paired columns) ───────
+  x_int <- suppressWarnings(as.integer(x))
+  x_int <- x_int[!is.na(x_int) & x_int > 0]
+  if (length(x_int)) {
+    v <- max(x_int)
+    if (is.finite(v)) {
+      return(as.integer(10L ^ nchar(as.character(v))))
+    }
+  }
+
+  as.integer(default_base)
 }
 
+# infer_base_from_marker_strings <- function(marker_df, sep = "/", sample_n = 5000L, default_base = 1000L) {
+#   # marker_df: data.frame of character-ish genotype strings
+#   x <- unlist(marker_df, use.names = FALSE)
+#   x <- x[!is.na(x)]
+#   x <- trimws(as.character(x))
+#   x <- x[nzchar(x)]
+#   if (!length(x)) return(as.integer(default_base))
+  
+#   # sample to keep it cheap
+#   if (length(x) > sample_n) x <- sample(x, sample_n)
+  
+#   # keep only strings with sep and digits
+#   x <- x[grepl("/", x, fixed = TRUE)]
+#   if (!length(x)) return(as.integer(default_base))
+  
+#   a <- suppressWarnings(as.integer(sub("/.*$", "", x)))
+#   b <- suppressWarnings(as.integer(sub("^.*/", "", x)))
+#   v <- max(c(a, b), na.rm = TRUE)
+#   if (!is.finite(v) || v <= 0) return(as.integer(default_base))
+  
+#   # base must be > max allele. your previous logic used 10^width, which is fine.
+#   width <- nchar(as.character(v))
+#   as.integer(10L ^ width)
+# }
 
 parse_col_index_ranges <- function(x, n_max) {
   if (is.null(x) || !nzchar(trimws(x))) return(integer(0))
@@ -768,47 +646,153 @@ reset_downstream_state <- function(rv) {
     leaflet::clearShapes()
 }
 
+# .duckdb_import_raw <- function(con, tbl_raw, file_path, sep, header) {
+#   stopifnot(!is.null(con), nzchar(tbl_raw))
+#   if (!nzchar(file_path) || !file.exists(file_path)) {
+#     stop("duckdb import: file_path missing or does not exist")
+#   }
+  
+#   DBI::dbExecute(con, sprintf("DROP TABLE IF EXISTS %s;", .sql_ident(tbl_raw)))
+  
+#   q_file <- DBI::dbQuoteString(con, normalizePath(file_path, winslash = "/"))
+#   q_sep  <- DBI::dbQuoteString(con, sep)
+#   hdr    <- if (isTRUE(header)) "true" else "false"
+  
+#   sql <- sprintf(
+#     "CREATE TABLE %s AS
+#      SELECT * FROM read_csv_auto(%s,
+#         delim=%s,
+#         header=%s,
+#         all_varchar=true,
+#         ignore_errors=true,
+#         parallel=true
+#      );",
+#     .sql_ident(tbl_raw), q_file, q_sep, hdr
+#   )
+
+#   # parallel=true is a DuckDB >= 0.9 hint; fall back silently if unsupported
+#   tryCatch(
+#     DBI::dbExecute(con, sql),
+#     error = function(e) {
+#       sql_fallback <- sprintf(
+#         "CREATE TABLE %s AS
+#          SELECT * FROM read_csv_auto(%s,
+#             delim=%s,
+#             header=%s,
+#             all_varchar=true,
+#             ignore_errors=true
+#          );",
+#         .sql_ident(tbl_raw), q_file, q_sep, hdr
+#       )
+#       DBI::dbExecute(con, sql_fallback)
+#     }
+#   )
+#   TRUE
+# }
+
+# REMPLACER la fonction .duckdb_import_raw() en entier
+
 .duckdb_import_raw <- function(con, tbl_raw, file_path, sep, header) {
   stopifnot(!is.null(con), nzchar(tbl_raw))
   if (!nzchar(file_path) || !file.exists(file_path)) {
     stop("duckdb import: file_path missing or does not exist")
   }
-  
+
   DBI::dbExecute(con, sprintf("DROP TABLE IF EXISTS %s;", .sql_ident(tbl_raw)))
-  
-  q_file <- DBI::dbQuoteString(con, normalizePath(file_path, winslash = "/"))
+
+  # ── Pré-traitement : détection FIABLE de l'encodage + en-têtes dupliqués ──
+  # BUG CORRIGÉ : readLines(..., encoding = "UTF-8") ne VALIDE PAS le contenu ;
+  # elle ne lève (quasiment) jamais d'erreur sur des octets UTF-8 invalides
+  # (ex. 0xE9 seul, typique des fichiers Latin-1 / Windows-1252 exportés
+  # depuis Excel ou FSTAT sous Windows, comme les noms de population
+  # accentués, "Bakolé", etc.). Le tryCatch précédent ne se déclenchait donc
+  # (presque) jamais : le fichier était relu comme "UTF-8" avec des octets
+  # invalides, puis DuckDB (ignore_errors = TRUE plus bas) supprimait
+  # SILENCIEUSEMENT toute ligne qu'il ne pouvait pas parser — typiquement une
+  # population entière — sans aucun avertissement pour l'utilisateur.
+  #
+  # On teste donc explicitement la validité UTF-8 sur les OCTETS BRUTS avant
+  # toute lecture, et on convertit proprement (Latin-1 -> UTF-8) si besoin.
+  raw_bytes     <- readBin(file_path, what = "raw", n = file.info(file_path)$size)
+  is_valid_utf8 <- tryCatch(validUTF8(rawToChar(raw_bytes, multiple = FALSE)),
+                            error = function(e) FALSE)
+
+  raw_lines <- if (isTRUE(is_valid_utf8)) {
+    readLines(file_path, encoding = "UTF-8", warn = FALSE)
+  } else {
+    # Latin-1 / Windows-1252 : le cas le plus fréquent pour des fichiers de
+    # génétique des populations produits sous Windows. On lit tel quel, puis
+    # on convertit explicitement vers UTF-8 (au lieu de laisser passer des
+    # octets invalides qui feront tomber DuckDB en silence plus bas).
+    lines_latin1 <- readLines(file_path, encoding = "latin1", warn = FALSE)
+    iconv(lines_latin1, from = "latin1", to = "UTF-8", sub = "byte")
+  }
+
+  if (isTRUE(header) && length(raw_lines) >= 1L) {
+    raw_header   <- strsplit(raw_lines[1L], sep, fixed = TRUE)[[1L]]
+    clean_header <- make.unique(raw_header, sep = "_")
+    if (!identical(raw_header, clean_header)) {
+      raw_lines[1L] <- paste(clean_header, collapse = sep)
+    }
+  }
+
+  n_data_lines <- length(raw_lines) - if (isTRUE(header)) 1L else 0L
+
+  tmp_file <- tempfile(fileext = ".txt")
+  on.exit(unlink(tmp_file), add = TRUE)
+  # useBytes = TRUE : les lignes sont déjà proprement encodées en UTF-8
+  # ci-dessus ; on écrit les octets tels quels sans laisser R réinterpréter/
+  # re-corrompre l'encodage déclaré de chaque chaîne.
+  writeLines(raw_lines, tmp_file, useBytes = TRUE)
+  # ── Fin pré-traitement ────────────────────────────────────────────────────
+
+  q_file <- DBI::dbQuoteString(con, normalizePath(tmp_file, winslash = "/"))
   q_sep  <- DBI::dbQuoteString(con, sep)
   hdr    <- if (isTRUE(header)) "true" else "false"
-  
+
   sql <- sprintf(
     "CREATE TABLE %s AS
      SELECT * FROM read_csv_auto(%s,
-        delim=%s,
-        header=%s,
-        all_varchar=true,
-        ignore_errors=true,
-        parallel=true
+        delim=%s, header=%s,
+        all_varchar=true, ignore_errors=true, parallel=true
      );",
     .sql_ident(tbl_raw), q_file, q_sep, hdr
   )
-
-  # parallel=true is a DuckDB >= 0.9 hint; fall back silently if unsupported
   tryCatch(
     DBI::dbExecute(con, sql),
     error = function(e) {
       sql_fallback <- sprintf(
         "CREATE TABLE %s AS
          SELECT * FROM read_csv_auto(%s,
-            delim=%s,
-            header=%s,
-            all_varchar=true,
-            ignore_errors=true
+            delim=%s, header=%s,
+            all_varchar=true, ignore_errors=true
          );",
         .sql_ident(tbl_raw), q_file, q_sep, hdr
       )
       DBI::dbExecute(con, sql_fallback)
     }
   )
+
+  # ── Garde-fou : ignore_errors = TRUE fait taire DuckDB sur toute ligne
+  # illisible (encodage résiduel, colonnes mal formées, etc.) — c'est
+  # exactement ce qui a fait disparaître "Bakolé" sans avertissement. On
+  # vérifie donc après coup qu'aucune ligne n'a été perdue silencieusement,
+  # et on alerte l'utilisateur sinon.
+  n_imported <- tryCatch(
+    DBI::dbGetQuery(con, sprintf("SELECT COUNT(*) AS n FROM %s;", .sql_ident(tbl_raw)))$n[[1]],
+    error = function(e) NA_integer_
+  )
+  if (is.finite(n_imported) && is.finite(n_data_lines) && n_imported < n_data_lines) {
+    msg <- sprintf(
+      "DuckDB a ignor\u00e9 silencieusement %d ligne(s) sur %d lors de l'import (encodage/format illisible) \u2014 v\u00e9rifiez le fichier source.",
+      n_data_lines - n_imported, n_data_lines
+    )
+    warning(msg, call. = FALSE)
+    if (requireNamespace("shiny", quietly = TRUE) && isTRUE(shiny::isRunning())) {
+      shiny::showNotification(msg, type = "error", duration = NULL)
+    }
+  }
+
   TRUE
 }
 
@@ -1025,30 +1009,18 @@ reset_downstream_state <- function(rv) {
 .is_pop_name <- function(x) {
   if (length(x) != 1L || is.na(x)) return(FALSE)
   nm <- tolower(trimws(as.character(x)))
-  
-  # common variants in your app / popgen datasets
+
   patterns <- c(
-    "^pop$",
-    "^population$",
-    "^populations$",
-    "^pop_id$",
-    "^popid$",
-    "^deme$",
-    "^site$",
-    "^locality$",
-    "^location$",
-    "^sampling_site$",
-    "^samplinglocation$",
-    "^group$",
-    "^cluster$",
-    "^subpop$",
-    "^subpopulation$",
-    "^strata$",
-    "^stratum$",
-    "^region$",
-    "^zone$"
+    "^pop$", "^population$", "^populations$", "^pop_id$", "^popid$",
+    "^deme$", "^site$", "^locality$", "^location$", "^sampling_site$",
+    "^samplinglocation$", "^group$", "^cluster$", "^subpop$",
+    "^subpopulation$", "^strata$", "^stratum$", "^region$", "^zone$",
+    # ── termes Create / Genetix / Fstat ──────────────────────────────
+    "^area$", "^areas$", "^local$", "^localite$", "^localité$",
+    "^provenance$", "^village$", "^pays$", "^collection$",
+    "^origin$", "^origine$", "^habitat$", "^patch$"
   )
-  
+
   any(vapply(patterns, function(p) grepl(p, nm, perl = TRUE), logical(1)))
 }
 
@@ -1085,7 +1057,7 @@ detect_columns_auto <- function(df, missing_info) {
   
   # --- population
   pop_candidates <- which(vapply(cn, .is_pop_name, logical(1)))
-  
+    
   pop_col <- NA_character_
   if (length(pop_candidates)) {
     nonnum <- pop_candidates[!vapply(pop_candidates, function(i) .is_mostly_numeric(df[[i]]), logical(1))]
@@ -1145,9 +1117,7 @@ detect_columns_auto <- function(df, missing_info) {
   idlike_idxs <- setdiff(idlike_idxs, match(pop_col, cn))
   
   marker_idxs <- setdiff(marker_idxs, idlike_idxs)
-  
-  
-  
+     
   # --- force population-code columns (numeric) out of markers
   popcode_idxs <- which(vapply(cn, .is_popcode_name, logical(1)))
   
@@ -2405,7 +2375,6 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
   return(do.call(c, results))
 }
 
-
 # engine_freena.R
 # Faithful R translation of FreeNA_optm2R.pas
 #
@@ -2707,8 +2676,8 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
   w_s1_ena_pair <- w_s3_ena_pair <- matrix(0, npairs, nloc)
   dc_raw_pair   <- dc_ena_pair   <- matrix(NA_real_, npairs, nloc)
 
-  for (pi in seq_len(npairs)) {
-    p1 <- pair_list[[pi]][1L]; p2 <- pair_list[[pi]][2L]
+  for (pidx in seq_len(npairs)) {
+    p1 <- pair_list[[pidx]][1L]; p2 <- pair_list[[pidx]][2L]
     for (li in seq_len(nloc)) {
       lo <- loci[li]
       pr1 <- parsed_cache[[lo]][[p1]]; pr2 <- parsed_cache[[lo]][[p2]]
@@ -2718,21 +2687,21 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
       alleles_pair_raw <- sort(unique(c(pr1$alleles, pr2$alleles)))
       pd_raw <- list(.fr_raw_popdata(pr1), .fr_raw_popdata(pr2))
       comp_raw <- .fr_wc84_components(pd_raw, alleles_pair_raw)
-      w_s1_raw_pair[pi, li] <- comp_raw$s1 * comp_raw$nc
-      w_s3_raw_pair[pi, li] <- comp_raw$s3 * comp_raw$nc
+      w_s1_raw_pair[pidx, li] <- comp_raw$s1 * comp_raw$nc
+      w_s3_raw_pair[pidx, li] <- comp_raw$s3 * comp_raw$nc
 
       # Pairwise Fst — ena
       alleles_pair_ena <- sort(unique(c(em1$alleles, em2$alleles)))
       pd_ena <- list(.fr_ena_popdata(em1), .fr_ena_popdata(em2))
       comp_ena <- .fr_wc84_components(pd_ena, alleles_pair_ena)
-      w_s1_ena_pair[pi, li] <- comp_ena$s1 * comp_ena$nc
-      w_s3_ena_pair[pi, li] <- comp_ena$s3 * comp_ena$nc
+      w_s1_ena_pair[pidx, li] <- comp_ena$s1 * comp_ena$nc
+      w_s3_ena_pair[pidx, li] <- comp_ena$s3 * comp_ena$nc
 
       # CS distance — raw
       ni1 <- pr1$n_valid; ni2 <- pr2$n_valid
       if (ni1 > 0L && ni2 > 0L) {
         cs <- .fr_cs_prod(pr1$cnt / (2 * ni1), pr2$cnt / (2 * ni2))
-        if (cs <= 1.0) dc_raw_pair[pi, li] <- (2 / pi) * sqrt(2 * (1 - cs))
+        if (cs <= 1.0) dc_raw_pair[pidx, li] <- (2 / base::pi) * sqrt(2 * (1 - cs))
       }
 
       # CS distance — ena (INA: append rd, no renormalisation)
@@ -2741,7 +2710,7 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
         f1 <- .fr_append_null_state(em1$cq, em1$rd)
         f2 <- .fr_append_null_state(em2$cq, em2$rd)
         cs_c <- .fr_cs_prod(f1, f2)
-        if (cs_c <= 1.0) dc_ena_pair[pi, li] <- (2 / pi) * sqrt(2 * (1 - cs_c))
+        if (cs_c <= 1.0) dc_ena_pair[pidx, li] <- (2 / base::pi) * sqrt(2 * (1 - cs_c))
       }
     }
   }
@@ -2801,14 +2770,14 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
     boot_global_raw[b] <- if (s3g_r != 0) s1g_r / s3g_r else NA_real_
     boot_global_ena[b] <- if (s3g_e != 0) s1g_e / s3g_e else NA_real_
 
-    for (pi in seq_len(npairs)) {
-      s1p_r <- sum(res$w_s1_raw_pair[pi, idx]); s3p_r <- sum(res$w_s3_raw_pair[pi, idx])
-      s1p_e <- sum(res$w_s1_ena_pair[pi, idx]); s3p_e <- sum(res$w_s3_ena_pair[pi, idx])
-      boot_pair_raw[b, pi] <- if (s3p_r != 0) s1p_r / s3p_r else NA_real_
-      boot_pair_ena[b, pi] <- if (s3p_e != 0) s1p_e / s3p_e else NA_real_
+    for (pidx in seq_len(npairs)) {
+      s1p_r <- sum(res$w_s1_raw_pair[pidx, idx]); s3p_r <- sum(res$w_s3_raw_pair[pidx, idx])
+      s1p_e <- sum(res$w_s1_ena_pair[pidx, idx]); s3p_e <- sum(res$w_s3_ena_pair[pidx, idx])
+      boot_pair_raw[b, pidx] <- if (s3p_r != 0) s1p_r / s3p_r else NA_real_
+      boot_pair_ena[b, pidx] <- if (s3p_e != 0) s1p_e / s3p_e else NA_real_
 
-      boot_dc_raw[b, pi] <- mean(res$dc_raw_pair[pi, idx], na.rm = TRUE)
-      boot_dc_ena[b, pi] <- mean(res$dc_ena_pair[pi, idx], na.rm = TRUE)
+      boot_dc_raw[b, pidx] <- mean(res$dc_raw_pair[pidx, idx], na.rm = TRUE)
+      boot_dc_ena[b, pidx] <- mean(res$dc_ena_pair[pidx, idx], na.rm = TRUE)
     }
   }
 

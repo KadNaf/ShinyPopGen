@@ -1,4 +1,31 @@
 // www/fis_permute_bootstrap_wc.cpp
+//
+// RNG / REPRODUCIBILITY NOTE (added following a code audit; keep in sync
+// with fit_permute_bootstrap_wc.cpp, which follows the same scheme, and with
+// fst_permute_boostrap_OpenMP.cpp, which uses a DIFFERENT scheme):
+//
+//   The permutation/bootstrap loops in this file draw randomness with R's
+//   own R::unif_rand() (see e.g. the `R::unif_rand()` calls below). This is
+//   reproducible from R via set.seed() the same way any base-R random draw
+//   is, and is the reason this file explicitly does NOT parallelise those
+//   loops with OpenMP (R's RNG state is process-global and not thread-safe -
+//   see the "IMPORTANT: do NOT OpenMP-parallelise this loop" comment at the
+//   relevant call site). Any future change that adds OpenMP around a loop
+//   using R::unif_rand() would silently produce incorrect / non-reproducible
+//   results and must not be made without first switching that loop to a
+//   thread-local generator (as fst_permute_boostrap_OpenMP.cpp does).
+//
+//   For the publication: state explicitly that FIS/FIT permutation p-values
+//   and bootstrap CIs are reproducible via set.seed() but are NOT computed
+//   in parallel, whereas FST bootstrap/permutation (fst_permute_boostrap_
+//   OpenMP.cpp) IS parallelised and has a different reproducibility
+//   contract (fixed seed AND fixed thread count - see the note in that
+//   file). Harmonizing the three estimator families onto one RNG scheme is
+//   tracked as a P1 item in the accompanying audit and is intentionally NOT
+//   done here, since it would change numerical output and must be validated
+//   against reference software (hierfstat/GENEPOP) before merging - see
+//   tests/testthat/test-numeric-validation-fst.R.
+//
 // [[Rcpp::plugins(cpp17)]]
 // [[Rcpp::plugins(openmp)]]
 // [[Rcpp::depends(Rcpp)]]
