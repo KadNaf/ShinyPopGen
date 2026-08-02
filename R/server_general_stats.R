@@ -2823,7 +2823,7 @@ server_general_stats <- function(id, rv) {
       round_cols <- which(names(df) %in% c("Observed", "Boot_Mean", "SE", "CI_L", "CI_U"))
 
       DT::datatable(
-        df, rownames = FALSE, colnames = pretty_names,
+        df, rownames = FALSE, colnames = unname(pretty_names[names(df)]),
         options = list(dom = "t", pageLength = 5, ordering = FALSE)
       ) %>% DT::formatRound(columns = round_cols, digits = 4)
     })
