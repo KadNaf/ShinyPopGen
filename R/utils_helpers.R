@@ -2796,3 +2796,88 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
     n_boot = n_boot, conf = conf
   )
 }
+# ============================================================================
+# Output-file metadata header (added so that every exported result file is
+# self-describing: which dataset it came from, which subsamples/loci went
+# into it, how many permutations/bootstrap replicates were used and what,
+# exactly, was permuted/resampled — see project audit, Subdivision module).
+# ============================================================================
+
+#' Build a block of "#"-commented metadata lines for exported CSV/TXT files.
+#'
+#' @param title         Short title of the analysis (e.g. "FST bootstrap over subsamples").
+#' @param dataset_name  Name of the source data file (rv$dataset_filename), or NULL/"" if unknown.
+#' @param subsamples    Character vector of subsample (population) names used.
+#' @param loci          Character vector of locus names used.
+#' @param n_perm        Number of permutations used (or NULL if not applicable).
+#' @param n_boot        Number of bootstrap replicates used (or NULL if not applicable).
+#' @param resampling_unit Character, one short sentence describing exactly what unit is
+#'   permuted or resampled (e.g. "subsamples (populations), resampled as whole blocks"
+#'   or "loci, resampled with replacement across the locus set").
+#' @param extra         Optional named list/character vector of extra "key: value" lines.
+#'
+#' @return A character vector, one metadata line per element, ready to be
+#'   written to file before the data table itself (e.g. with `writeLines()`
+#'   followed by `write.table(..., append = TRUE)`).
+#' @noRd
+spg_export_header <- function(title,
+                               dataset_name     = NULL,
+                               subsamples       = NULL,
+                               loci             = NULL,
+                               n_perm           = NULL,
+                               n_boot           = NULL,
+                               resampling_unit  = NULL,
+                               extra            = NULL) {
+
+  esc <- function(x) paste(as.character(x), collapse = ", ")
+
+  lines <- c(
+    paste0("# ShinyPopGen \u2014 ", title),
+    paste0("# Export date: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "")),
+    paste0("# Source data file: ", if (is.null(dataset_name) || !nzchar(dataset_name))
+      "unknown (loaded before this field was recorded, or example dataset)" else dataset_name)
+  )
+
+  if (!is.null(subsamples) && length(subsamples) > 0) {
+    lines <- c(lines,
+      paste0("# Subsamples (populations) analysed (n = ", length(subsamples), "): ", esc(subsamples)))
+  }
+  if (!is.null(loci) && length(loci) > 0) {
+    lines <- c(lines,
+      paste0("# Loci analysed (n = ", length(loci), "): ", esc(loci)))
+  }
+  if (!is.null(n_perm)) {
+    lines <- c(lines, paste0("# Number of permutations: ", format(as.integer(n_perm), big.mark = ",")))
+  }
+  if (!is.null(n_boot)) {
+    lines <- c(lines, paste0("# Number of bootstrap replicates: ", format(as.integer(n_boot), big.mark = ",")))
+  }
+  if (!is.null(resampling_unit) && nzchar(resampling_unit)) {
+    lines <- c(lines, paste0("# What is permuted/resampled: ", resampling_unit))
+  }
+  if (!is.null(extra) && length(extra) > 0) {
+    nm <- names(extra)
+    if (is.null(nm)) nm <- rep("", length(extra))
+    lines <- c(lines, paste0("# ", ifelse(nzchar(nm), paste0(nm, ": "), ""), as.character(extra)))
+  }
+  lines <- c(lines, "#", "# --- Data below ---")
+  lines
+}
+
+#' Write a data.frame to CSV, preceded by a metadata header (see spg_export_header()).
+#' @noRd
+spg_write_csv_with_header <- function(df, file, header_lines, ...) {
+  con <- file(file, open = "wt")
+  on.exit(close(con), add = TRUE)
+  writeLines(header_lines, con)
+  utils::write.csv(df, con, row.names = FALSE, ...)
+}
+
+#' Write a data.frame to a tab-delimited TXT file, preceded by a metadata header.
+#' @noRd
+spg_write_txt_with_header <- function(df, file, header_lines, ...) {
+  con <- file(file, open = "wt")
+  on.exit(close(con), add = TRUE)
+  writeLines(header_lines, con)
+  utils::write.table(df, con, sep = "\t", row.names = FALSE, quote = FALSE, ...)
+}

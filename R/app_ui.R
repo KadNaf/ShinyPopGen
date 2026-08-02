@@ -713,7 +713,7 @@ app_ui <- function() {
         module_card("chart-line",  "Genetic Diversities",  "HS and HT per locus. Locus bootstrap for multilocus FST, FIT, FIS, HS, HT.", "#78B7C5", "genetic_diversities"),
         module_card("link",        "Linkage Disequilibrium","Pairwise LD tests among all loci with permutation p-values.", "#EBCC2A", "linkage_desequilibrium"),
         module_card("circle-notch","Null Alleles",          "Null allele frequency estimation by locus \u00d7 population using the FreeNA EM algorithm.", "#8D8680", "null_alleles"),
-        module_card("map-marker-alt","Isolation by Distance \U0001f6a7","Pairwise FST\u2044(1\u2212FST) vs geographic distance. Mantel test (Rousset 1997).", "#2CBF9F", "isolation_by_distance")
+        module_card("map-marker-alt","Isolation by Distance","Pairwise FST\u2044(1\u2212FST) vs geographic distance. Mantel test (Rousset 1997).", "#2CBF9F", "isolation_by_distance")
       )
     ),
 

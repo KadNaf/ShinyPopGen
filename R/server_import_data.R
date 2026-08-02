@@ -614,6 +614,7 @@ server_import_data <- function(id, rv) {
       rv$file_path <- default_path
       rv$sep <- "\t"
       rv$header <- input$header
+      rv$dataset_filename <- "default_dataset.csv"
       
       # ------------------------------#
       # State 1: import RAW
@@ -830,6 +831,11 @@ server_import_data <- function(id, rv) {
       
       uploaded_file(input$file1$datapath[1])
       # OR directly: rv$file_path <- input$file1$datapath[1]
+
+      # Keep the ORIGINAL file name (not the temp datapath) so that other
+      # modules (e.g. Subdivision, Isolation by distance) can stamp exported
+      # result files with the name of the source dataset.
+      rv$dataset_filename <- input$file1$name[1]
       
       reset_downstream_state(rv)
       

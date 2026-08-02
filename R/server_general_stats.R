@@ -334,6 +334,38 @@ server_general_stats <- function(id, rv) {
       mat
     })
 
+    # ── Subsample pairs template for Isolation by Distance ─────────────────
+    # One row per unique pair of subsamples currently loaded, with an empty
+    # Distance column the operator can fill in (or overwrite) by hand, and
+    # unwanted rows deleted, before loading the file back into the
+    # Isolation by Distance module (external pairs/distances file).
+    output$download_pairs_template <- downloadHandler(
+      filename = function() paste0("subsample_pairs_template_", Sys.Date(), ".csv"),
+      content = function(file) {
+        mat <- hf_mat_r()
+        pop_names <- as.character(attr(mat, "pop_levels"))
+        shiny::validate(shiny::need(length(pop_names) >= 2L,
+                                     "Need at least 2 subsamples to build a pairs template."))
+        pairs <- utils::combn(pop_names, 2L)
+        df <- data.frame(
+          Pop1     = pairs[1, ],
+          Pop2     = pairs[2, ],
+          Distance = NA_real_,
+          stringsAsFactors = FALSE
+        )
+        header <- spg_export_header(
+          title           = "Subsample pairs template for Isolation by Distance",
+          dataset_name    = if (!is.null(rv$dataset_filename)) rv$dataset_filename else NULL,
+          subsamples      = pop_names,
+          resampling_unit = NULL,
+          extra           = list(
+            "How to use" = "Fill in (or overwrite) the Distance column with your own values (geographic, temporal, ecological...), delete any pairs you don't want, then load this file in the Isolation by Distance module (external pairs/distances file) or its Mantel test tab."
+          )
+        )
+        spg_write_csv_with_header(df, file, header)
+      }
+    )
+
     # ── Ordre physique des loci depuis DuckDB (MIN(rowid)) ──────────────────
     # Même logique que locus_order_cte() dans server_allele_frequencies
     loci_order_r <- reactive({
@@ -2616,6 +2648,8 @@ server_general_stats <- function(id, rv) {
           conf_level = conf_level,
           base = base,
           loci_names = loci_names,
+          pop_names = as.character(attr(mat, "pop_levels")),
+          dataset_name = if (!is.null(rv$dataset_filename)) rv$dataset_filename else NA_character_,
           pval_method = if (!is.null(perm_res)) perm_res$pval_method else NA_character_
         )
         
@@ -2754,7 +2788,77 @@ server_general_stats <- function(id, rv) {
         width = NULL
       )
     })
-    
+
+    ### FST \u2014 loci bootstrap (FSTAT/FreeNA-comparable) value box ----
+    output$fst_locus_boot_box <- renderValueBox({
+      shiny::req(fst_boot_results())
+      lb <- fst_boot_results()$locus_boot_table
+      row <- if (is.data.frame(lb)) lb[lb$Statistic == "FST", , drop = FALSE] else NULL
+
+      if (is.null(row) || nrow(row) == 0L || is.na(row$Observed[1])) {
+        valueBox(value = "N/A", color = "red",
+                 subtitle = HTML("<small>FST (loci bootstrap)<br>FSTAT/FreeNA-comparable</small>"),
+                 icon = icon("layer-group"), width = NULL)
+      } else {
+        ci_txt <- sprintf("[%.4f ; %.4f]", row$CI_L[1], row$CI_U[1])
+        valueBox(
+          value    = format(round(row$Observed[1], 4), nsmall = 4),
+          color    = "olive",
+          subtitle = HTML(paste0("<small>FST (loci bootstrap)<br>CI ", ci_txt, "</small>")),
+          icon     = icon("layer-group"), width = NULL
+        )
+      }
+    })
+
+    ### FST \u2014 loci bootstrap table (FST/FIT/FIS, Overall only) ----
+    output$fst_locus_boot_table <- DT::renderDT({
+      shiny::req(fst_boot_results())
+      lb <- fst_boot_results()$locus_boot_table
+      shiny::validate(shiny::need(is.data.frame(lb), "Run the FST analysis first."))
+
+      df <- lb[lb$Statistic %in% c("FST", "FIT", "FIS"), , drop = FALSE]
+      pretty_names <- c(Statistic = "Statistic", Observed = "Observed",
+                         Boot_Mean = "Bootstrap mean", SE = "Bootstrap SE",
+                         CI_L = "CI lower", CI_U = "CI upper")
+
+      DT::datatable(
+        df, rownames = FALSE, colnames = pretty_names,
+        options = list(dom = "t", pageLength = 5, ordering = FALSE)
+      ) %>% DT::formatRound(c("Observed", "Boot_Mean", "SE", "CI_L", "CI_U"), 4)
+    })
+
+    ### FST \u2014 loci bootstrap downloads (with metadata header) ----
+    output$download_fst_locus_boot_table <- downloadHandler(
+      filename = function() paste0("fst_bootstrap_over_loci_", Sys.Date(), ".csv"),
+      content = function(file) {
+        shiny::req(fst_boot_results())
+        lb <- fst_boot_results()$locus_boot_table
+        shiny::req(is.data.frame(lb))
+        spg_write_csv_with_header(
+          lb[lb$Statistic %in% c("FST", "FIT", "FIS", "HS", "HT"), , drop = FALSE], file,
+          .fst_export_header(
+            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (comparable to FSTAT and FreeNA)",
+            extra = list("Bootstrap unit" = "loci (resampled with replacement across the whole locus set); rows = overall (multilocus) statistics, not per-locus")
+          )
+        )
+      }
+    )
+    output$download_fst_locus_boot_table_txt <- downloadHandler(
+      filename = function() paste0("fst_bootstrap_over_loci_", Sys.Date(), ".txt"),
+      content = function(file) {
+        shiny::req(fst_boot_results())
+        lb <- fst_boot_results()$locus_boot_table
+        shiny::req(is.data.frame(lb))
+        spg_write_txt_with_header(
+          lb[lb$Statistic %in% c("FST", "FIT", "FIS", "HS", "HT"), , drop = FALSE], file,
+          .fst_export_header(
+            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (comparable to FSTAT and FreeNA)",
+            extra = list("Bootstrap unit" = "loci (resampled with replacement across the whole locus set); rows = overall (multilocus) statistics, not per-locus")
+          )
+        )
+      }
+    )
+
     ### Global p-value ----
     output$global_fst_pvalue_box <- renderValueBox({
       shiny::req(fst_boot_results())
@@ -3231,18 +3335,41 @@ server_general_stats <- function(id, rv) {
       }
     )
     ### FST ####
+    ### Shared metadata-header builder for FST/HS/HT exports (population-block
+    ### bootstrap = "bootstrap over subsamples") ---------------------------
+    .fst_export_header <- function(title, extra = NULL) {
+      res <- fst_boot_results()
+      md  <- if (is.list(res)) res$metadata else NULL
+      spg_export_header(
+        title           = title,
+        dataset_name    = if (!is.null(md)) md$dataset_name else NULL,
+        subsamples      = if (!is.null(md)) md$pop_names    else NULL,
+        loci            = if (!is.null(md)) md$loci_names   else NULL,
+        n_perm          = if (!is.null(md)) md$n_permutations else NULL,
+        n_boot          = if (!is.null(md)) md$n_bootstrap    else NULL,
+        resampling_unit = "Bootstrap over SUBSAMPLES: whole populations are resampled as blocks (individuals within a resampled population kept together), percentile CI. Permutation p-value: genotypes randomly reassigned among subsamples (one-sided test, FST >= observed). For the loci-based bootstrap comparable to FSTAT/FreeNA (loci resampled with replacement instead of subsamples), see the 'FST bootstrap over loci' table/export.",
+        extra           = extra
+      )
+    }
+
     output$download_fst_table <- downloadHandler(
       filename = function() paste0("fst_results_", Sys.Date(), ".csv"),
       content = function(file) {
         shiny::req(fst_boot_results())
-        write.csv(fst_boot_results()$final_table, file, row.names = FALSE)
+        spg_write_csv_with_header(
+          fst_boot_results()$final_table, file,
+          .fst_export_header("FST per locus \u2014 bootstrap over subsamples (population blocks) + permutation p-value")
+        )
       }
     )
     output$download_fst_table_txt <- downloadHandler(
       filename = function() paste0("fst_results_", Sys.Date(), ".txt"),
       content = function(file) {
         shiny::req(fst_boot_results())
-        write.table(fst_boot_results()$final_table, file, sep = "\t", row.names = FALSE, quote = FALSE)
+        spg_write_txt_with_header(
+          fst_boot_results()$final_table, file,
+          .fst_export_header("FST per locus \u2014 bootstrap over subsamples (population blocks) + permutation p-value")
+        )
       }
     )
 
@@ -3572,9 +3699,10 @@ server_general_stats <- function(id, rv) {
           p_global_gt    = p_gt_overall,
           G_null_overall = G_null_overall,
           metadata       = list(
-            n_perm     = n_perm,
-            loci_names = loci_names,
-            pop_names  = pop_names
+            n_perm       = n_perm,
+            loci_names   = loci_names,
+            pop_names    = pop_names,
+            dataset_name = if (!is.null(rv$dataset_filename)) rv$dataset_filename else NA_character_
           )
         ))
 
@@ -3757,19 +3885,39 @@ server_general_stats <- function(id, rv) {
     output$g_plot <- renderPlot({ .make_g_plot() })
 
     ## G-test download handlers ----
+    .g_export_header <- function(title, extra = NULL) {
+      res <- g_test_results()
+      md  <- if (is.list(res)) res$metadata else NULL
+      spg_export_header(
+        title           = title,
+        dataset_name    = if (!is.null(md)) md$dataset_name else NULL,
+        subsamples      = if (!is.null(md)) md$pop_names    else NULL,
+        loci            = if (!is.null(md)) md$loci_names   else NULL,
+        n_perm          = if (!is.null(md)) md$n_perm       else NULL,
+        n_boot          = NULL,
+        resampling_unit = "Permutation of COMPLETE MULTILOCUS GENOTYPES (whole individuals) among subsamples \u2014 the valid scheme when Hardy-Weinberg is NOT assumed within samples (FSTAT / Goudet et al. 1996, section 7.1). Only individuals with a complete genotype at ALL loci simultaneously are used (N_geno column). Two one-sided p-values per locus: p(>= obs.) = (b+1)/(m+1) with b = #{G_perm >= G_obs}; p(> obs.) with b = #{G_perm > G_obs}. Overall row = G summed over loci (additive property), tested the same way.",
+        extra           = extra
+      )
+    }
+
     output$download_g_table <- downloadHandler(
       filename = function() paste0("g_test_results_", Sys.Date(), ".csv"),
       content  = function(file) {
         shiny::req(g_test_results())
-        utils::write.csv(g_test_results()$final_table, file, row.names = FALSE)
+        spg_write_csv_with_header(
+          g_test_results()$final_table, file,
+          .g_export_header("G-based permutation test \u2014 subdivision (multilocus genotypes permuted among subsamples)")
+        )
       }
     )
     output$download_g_table_txt <- downloadHandler(
       filename = function() paste0("g_test_results_", Sys.Date(), ".txt"),
       content  = function(file) {
         shiny::req(g_test_results())
-        utils::write.table(g_test_results()$final_table, file,
-                          sep = "\t", row.names = FALSE, quote = FALSE)
+        spg_write_txt_with_header(
+          g_test_results()$final_table, file,
+          .g_export_header("G-based permutation test \u2014 subdivision (multilocus genotypes permuted among subsamples)")
+        )
       }
     )
     output$download_g_plot <- downloadHandler(

@@ -21,11 +21,32 @@ mod_subdivision_ui <- function(id) {
         "(FSTAT / Goudet et al. 1996). ",
         "Two one-sided p-values are reported, as in FSTAT: p<sub>\u2265</sub> = (b + 1)/(m + 1) with ",
         "b = #{G<sub>perm</sub> &ge; G<sub>obs</sub>}, and p<sub>&gt;</sub> with b = #{G<sub>perm</sub> &gt; G<sub>obs</sub>}.",
-        "<br><b>Seuls les individus à génotype multi-locus complet</b> (non manquant à TOUS les loci ",
-        "simultanément) sont utilisés, pour tous les loci et pour la permutation \u2014 exactement comme ",
-        "FSTAT (\u00ab Number of complete multilocus genotypes in the different samples \u00bb ; Goudet et al. 1996 \u00a77.1, note 1). ",
-        "N<sub>geno</sub> peut donc être inférieur au nombre d'individus non manquants à un locus pris isolément. "
+        "<br><b>Only individuals with a complete multilocus genotype</b> (not missing at ALL loci ",
+        "simultaneously) are used, for every locus and for the permutation \u2014 exactly as in ",
+        "FSTAT (\u201cNumber of complete multilocus genotypes in the different samples\u201d; Goudet et al. 1996 \u00a77.1, note 1). ",
+        "N<sub>geno</sub> can therefore be lower than the number of individuals with non-missing data at a single locus considered in isolation. ",
+        "<br><b>Two bootstrap schemes are available</b> for FST/HS/HT: resampling <b>subsamples</b> (populations, as whole blocks \u2014 ",
+        "the default table below) and resampling <b>loci</b> (with replacement across the locus set \u2014 the scheme ",
+        "comparable to FSTAT and FreeNA, see the dedicated table further down)."
       ))
+    ),
+
+    fluidRow(
+      box(
+        width = 12, solidHeader = TRUE, status = "primary",
+        title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
+                    icon("route"), "Subsample pairs \u2014 template for Isolation by Distance"),
+        tags$p(
+          "Generates one row per pair of subsamples (populations) currently loaded, ",
+          "with an empty Distance column. Open the file in a spreadsheet or text editor, ",
+          "delete any pairs you don't want to use, fill in (or overwrite) the Distance column ",
+          "with your own values, and load it back in the ",
+          tags$b("Isolation by Distance"), " module (tab \"Isolation by Distance\", option ",
+          tags$em("\"External pairs/distances file\""), "), or in its Mantel test tab."
+        ),
+        downloadButton(ns("download_pairs_template"), "Download subsample pairs template (.csv)",
+                        class = "btn-download-secondary")
+      )
     ),
 
     # ==========================================================#
@@ -81,6 +102,19 @@ mod_subdivision_ui <- function(id) {
                 shinyWidgets::progressBar(id = ns("fst_progress"), value = 0,
                                           title = "Overall Progress")
               )
+            ),
+            fluidRow(
+              column(4,
+                valueBoxOutput(ns("fst_locus_boot_box"), width = NULL)
+              ),
+              column(8,
+                tags$p(style = "color:#666; font-size:12px; margin-top: 25px;",
+                  icon("info-circle"),
+                  " Overall FST with bootstrap CI obtained by resampling ", tags$b("loci"),
+                  " (with replacement) instead of subsamples \u2014 the scheme comparable to ",
+                  tags$b("FSTAT"), " and ", tags$b("FreeNA"), ". See the dedicated tab below for the full table (FST, FIT, FIS)."
+                )
+              )
             )
           )
         )
@@ -102,14 +136,29 @@ mod_subdivision_ui <- function(id) {
                     icon("table"), "FST Results"),
         solidHeader = TRUE, status = "primary",
         tabsetPanel(
-          tabPanel("FST results",
-            h4(icon("info-circle"), "Bootstrap confidence intervals"),
-            p("FST per locus with population-block bootstrap CI and
+          tabPanel("FST results (bootstrap over subsamples)",
+            h4(icon("info-circle"), "Bootstrap confidence intervals \u2014 subsamples resampled as blocks"),
+            p("FST per locus with population-block (subsample) bootstrap CI and
               permutation p-values (population labels shuffled, one-sided test)."),
             DTOutput(ns("fst_results_table")), br(),
             fluidRow(
               column(6, downloadButton(ns("download_fst_table"),     ".csv", class = "btn-download-primary btn-block")),
               column(6, downloadButton(ns("download_fst_table_txt"), ".txt", class = "btn-download-secondary btn-block"))
+            )
+          ),
+          tabPanel("FST results (bootstrap over loci)",
+            h4(icon("info-circle"), "Bootstrap confidence intervals \u2014 loci resampled with replacement"),
+            p(HTML(paste0(
+              "Overall F<sub>ST</sub>, F<sub>IT</sub> and F<sub>IS</sub> with bootstrap CI obtained by ",
+              "resampling <b>loci</b> (with replacement, across the whole locus set) instead of subsamples. ",
+              "This is the scheme used by <b>FSTAT</b> and <b>FreeNA</b> and is the one directly comparable ",
+              "to their published confidence intervals. It complements, and is independent from, the ",
+              "subsample-block bootstrap in the previous tab."
+            ))),
+            DTOutput(ns("fst_locus_boot_table")), br(),
+            fluidRow(
+              column(6, downloadButton(ns("download_fst_locus_boot_table"),     ".csv", class = "btn-download-primary btn-block")),
+              column(6, downloadButton(ns("download_fst_locus_boot_table_txt"), ".txt", class = "btn-download-secondary btn-block"))
             )
           ),
           tabPanel("Visualization",
@@ -127,15 +176,17 @@ mod_subdivision_ui <- function(id) {
     # ==========================================================#
     h2("G-based Permutation Test \u2014 Subdivision", class = "section-title"),
     tags$p(HTML(paste0(
-      "G statistic (log-likelihood ratio) par locus, construit sur le tableau de contingence ",
-      "allèles \u00d7 populations (même formule que dans le test de LD ; Sokal & Rohlf 1981). ",
-      "Test global : G<sub>global</sub> = &Sigma; G<sub>locus</sub> (propriété additive). ",
-      "<br>Permutation : <b>génotypes multi-locus complets</b> (individus entiers) réassignés au hasard ",
-      "entre populations \u2014 schéma valide sans hypothèse de Hardy-Weinberg au sein des échantillons ",
-      "(FSTAT \u00a7\u00a07.1 / Goudet et al. 1996), identique à \u00ab NOT assuming random mating within samples \u00bb. ",
-      "Deux p-values unilatérales par locus, comme dans les fichiers de sortie FSTAT : ",
-      "p<sub>\u2265</sub> = (b + 1)/(m + 1) avec b = #{G<sub>perm</sub> &ge; G<sub>obs</sub>}, ",
-      "et p<sub>&gt;</sub> avec b = #{G<sub>perm</sub> &gt; G<sub>obs</sub>}."
+      "G statistic (log-likelihood ratio) per locus, built on the alleles \u00d7 populations contingency ",
+      "table (same formula as in the LD test; Sokal & Rohlf 1981). ",
+      "Global test: G<sub>global</sub> = &Sigma; G<sub>locus</sub> (additive property). ",
+      "<br>Permutation: <b>complete multilocus genotypes</b> (whole individuals) reassigned at random ",
+      "among populations \u2014 the valid scheme when Hardy-Weinberg is not assumed within samples ",
+      "(FSTAT \u00a7\u00a07.1 / Goudet et al. 1996), equivalent to \u201cNOT assuming random mating within samples\u201d. ",
+      "Two one-sided p-values per locus, as in FSTAT output files: ",
+      "p<sub>\u2265</sub> = (b + 1)/(m + 1) with b = #{G<sub>perm</sub> &ge; G<sub>obs</sub>}, ",
+      "and p<sub>&gt;</sub> with b = #{G<sub>perm</sub> &gt; G<sub>obs</sub>}.",
+      "<br>This test permutes whole individuals <b>among subsamples</b> \u2014 it is not a bootstrap and does not ",
+      "resample loci; the loci-resampling bootstrap (comparable to FSTAT/FreeNA) is reported in the FST section above."
     )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
@@ -158,8 +209,9 @@ mod_subdivision_ui <- function(id) {
             tags$small(
               style = "color: #666; margin-top: 6px; display: block;",
               icon("info-circle"),
-              "10 000 permutations recommandées (comme FSTAT). Minimum 1 000. ",
-              "G global = somme des G par locus."
+              "10,000 permutations recommended (as in FSTAT). Minimum 1,000. ",
+              "Global G = sum of the per-locus G values. Permutation is over subsamples ",
+              "(whole individuals reassigned among populations), not over loci."
             )
           ),
           column(9,
@@ -204,9 +256,9 @@ mod_subdivision_ui <- function(id) {
           tabPanel("G-test results",
             h4(icon("info-circle"), "G-statistic per locus"),
             p(HTML(paste0(
-              "G observé par locus, nombre de génotypes complets utilisés, et les deux p-values ",
-              "unilatérales p<sub>\u2265</sub> et p<sub>&gt;</sub> (comme les fichiers FSTAT_G, format \u00ab [p<sub>\u2265</sub>  p<sub>&gt;</sub>] \u00bb). ",
-              "Ligne Overall = G global (somme des G par locus) avec ses p-values globales."
+              "Observed G per locus, number of complete genotypes used, and the two one-sided p-values ",
+              "p<sub>\u2265</sub> and p<sub>&gt;</sub> (as in the FSTAT_G output files, format \u00ab [p<sub>\u2265</sub>  p<sub>&gt;</sub>] \u00bb). ",
+              "Overall row = global G (sum of per-locus G) with its global p-values."
             ))),
             DTOutput(ns("g_results_table")), br(),
             fluidRow(

@@ -179,19 +179,56 @@ server_isolation_by_distance <- function(id, rv) {
       df$FR_raw_lo <- .linearise(df$FST_raw_lo)
       df$FR_raw_hi <- .linearise(df$FST_raw_hi)
 
-      # Geographic distance (Vincenty, metres), if GPS available
-      coords <- tryCatch(coords_r(), error = function(e) NULL)
-      if (!is.null(coords)) {
-        get_d <- function(p1, p2) {
-          c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
-          if (nrow(c1) >= 1L && nrow(c2) >= 1L)
-            .vincenty_m(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
-          else NA_real_
-        }
-        df$Dgeo_m <- mapply(get_d, df$Pop1, df$Pop2)
-        df$lnDgeo <- ifelse(df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
+      # Geographic / pairwise distance (D_geo): either the Vincenty distance
+      # from GPS centroids, or an external Pop1/Pop2/Distance file (e.g. the
+      # subsample-pairs template exported from the Subdivision module, edited
+      # by the operator to keep/exclude pairs and fill in distances of any
+      # kind — not necessarily geographic).
+      use_external_dgeo <- isTRUE(identical(input$ibd_dgeo_source, "external"))
+
+      if (use_external_dgeo) {
+        shiny::req(input$ibd_dgeo_file)
+        ext <- .mt_read_file(input$ibd_dgeo_file, input$ibd_dgeo_sep, input$ibd_dgeo_header)
+        shiny::validate(shiny::need(ncol(ext) >= 3L,
+          "External distance file must have at least 3 columns: Pop1, Pop2, Distance."))
+        nm <- names(ext)
+        pop1_col <- .guess_col(nm, c("^Pop1$", "^Farm1$", "^ID1$"), nm[1])
+        pop2_col <- .guess_col(nm, c("^Pop2$", "^Farm2$", "^ID2$"), nm[2])
+        dist_col <- .guess_col(nm, c("^Distance$", "^Dgeo", "^Dist$"), nm[3])
+
+        key <- function(a, b) { a <- as.character(a); b <- as.character(b)
+                                 ifelse(a <= b, paste(a, b, sep = "__"), paste(b, a, sep = "__")) }
+
+        ext2 <- data.frame(
+          .key     = key(ext[[pop1_col]], ext[[pop2_col]]),
+          Dgeo_ext = suppressWarnings(as.numeric(ext[[dist_col]])),
+          stringsAsFactors = FALSE
+        )
+        ext2 <- ext2[!duplicated(ext2$.key), , drop = FALSE]
+
+        df$.key <- key(df$Pop1, df$Pop2)
+        # Inner join: ONLY pairs present in the external file are kept — pairs
+        # the operator deleted from the file are excluded from the analysis.
+        df <- merge(df, ext2, by = ".key", sort = FALSE)
+        df$.key <- NULL
+        df$Dgeo_m <- df$Dgeo_ext
+        df$Dgeo_ext <- NULL
+        df$lnDgeo <- ifelse(is.finite(df$Dgeo_m) & df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
       } else {
-        df$Dgeo_m <- NA_real_; df$lnDgeo <- NA_real_
+        # Geographic distance (Vincenty, metres), if GPS available
+        coords <- tryCatch(coords_r(), error = function(e) NULL)
+        if (!is.null(coords)) {
+          get_d <- function(p1, p2) {
+            c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
+            if (nrow(c1) >= 1L && nrow(c2) >= 1L)
+              .vincenty_m(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
+            else NA_real_
+          }
+          df$Dgeo_m <- mapply(get_d, df$Pop1, df$Pop2)
+          df$lnDgeo <- ifelse(df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
+        } else {
+          df$Dgeo_m <- NA_real_; df$lnDgeo <- NA_real_
+        }
       }
 
       df
@@ -212,7 +249,7 @@ server_isolation_by_distance <- function(id, rv) {
       df <- full_pair_table_r()
       shiny::validate(shiny::need(
         any(is.finite(df$Dgeo_m)),
-        "No geographic distances available. Set Latitude/Longitude at import for at least 2 populations."))
+        "No distances available. Either set Latitude/Longitude at import for at least 2 populations (GPS mode), or upload a Pop1/Pop2/Distance file (external file mode)."))
 
       use_log <- identical(input$ibd_model, "2D")
       x <- if (use_log) df$lnDgeo else df$Dgeo_m
