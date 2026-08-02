@@ -2820,11 +2820,12 @@ server_general_stats <- function(id, rv) {
       pretty_names <- c(Statistic = "Statistic", Observed = "Observed",
                          Boot_Mean = "Bootstrap mean", SE = "Bootstrap SE",
                          CI_L = "CI lower", CI_U = "CI upper")
+      round_cols <- which(names(df) %in% c("Observed", "Boot_Mean", "SE", "CI_L", "CI_U"))
 
       DT::datatable(
         df, rownames = FALSE, colnames = pretty_names,
         options = list(dom = "t", pageLength = 5, ordering = FALSE)
-      ) %>% DT::formatRound(c("Observed", "Boot_Mean", "SE", "CI_L", "CI_U"), 4)
+      ) %>% DT::formatRound(columns = round_cols, digits = 4)
     })
 
     ### FST \u2014 loci bootstrap downloads (with metadata header) ----
