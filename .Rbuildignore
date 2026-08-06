@@ -1,3 +1,4 @@
+^app\.R$
 ^renv$
 ^renv\.lock$
 ^\.Rprofile$
@@ -11,3 +12,4 @@
 ^Dockerfile$
 ^\.dockerignore$
 ^\.gitignore$
+^doc$

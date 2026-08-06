@@ -31,6 +31,7 @@ Imports:
     shinydashboard,
     shinyWidgets,
     shinyalert,
+    shinyFiles,
     DT,
     dplyr,
     tidyr,
@@ -58,5 +59,6 @@ Suggests:
     golem (>= 0.4.0),
     knitr,
     rmarkdown,
-    hierfstat
+    hierfstat,
+    rstudioapi
 Config/testthat/edition: 3
