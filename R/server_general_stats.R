@@ -2183,8 +2183,21 @@ server_general_stats <- function(id, rv) {
     fst_perm_results <- reactiveVal(NULL)
     fst_parallel_meta <- reactiveVal(NULL)
     
-    run_bootstrap_fst_analysis <- function(n_perm, n_boot, conf_level, missing_code = 0L) {
+    run_bootstrap_fst_analysis <- function(n_perm, n_boot, conf_level, missing_code = 0L,
+                                            progress_id = NULL) {
       db_ready()
+
+      # Real intermediate progress: each call below corresponds to one of the
+      # (sequential, often the slowest) stages of the analysis, so updating
+      # here reflects actual work done rather than a single 15% -> 100% jump.
+      .bump_progress <- function(value, title = NULL) {
+        if (!is.null(progress_id)) {
+          shinyWidgets::updateProgressBar(session, progress_id, value = value,
+                                           title = title %||% "Overall Progress")
+        }
+      }
+
+      .bump_progress(5, "Loading genotype matrix...")
       mat  <- hf_mat_r()
       base <- base_r()
       
@@ -2209,6 +2222,7 @@ server_general_stats <- function(id, rv) {
       # ---------------------------#
       # 1) Observed (WC84) from C++
       # ---------------------------#
+      .bump_progress(15, "Computing observed FST (Weir & Cockerham 1984)...")
       obs_res <- .step("observed_wc84_stats_cpp()", observed_wc84_stats_cpp(
         dat            = mat,
         pop_col_1based = 1L,
@@ -2228,6 +2242,7 @@ server_general_stats <- function(id, rv) {
       # ---------------------------#
       # 1b) Locus bootstrap (resample loci with replacement)
       # ---------------------------#
+      .bump_progress(25, "Bootstrap over loci (FSTAT/FreeNA-comparable)...")
       locus_comp <- wc84_locus_components_cpp(
         dat            = mat,
         pop_col_1based = 1L,
@@ -2255,6 +2270,8 @@ server_general_stats <- function(id, rv) {
       pval_overall <- NA_real_
       
       if (!is.null(n_perm) && n_perm > 0) {
+        .bump_progress(40, sprintf("Running %s permutations (population labels shuffled)...",
+                                    format(as.integer(n_perm), big.mark = ",")))
         perm_res <-  .step("batch_permute_wc84_fst_auto()", batch_permute_wc84_fst_auto(
           dat            = mat,
           pop_col_1based = 1L,
@@ -2283,6 +2300,8 @@ server_general_stats <- function(id, rv) {
       # ---------------------------#
       # 4) Bootstrap (pop blocks) for overall CI (reflected/basic)
       # ---------------------------#
+      .bump_progress(70, sprintf("Bootstrap over subsamples (%s replicates)...",
+                                  format(as.integer(n_boot), big.mark = ",")))
       boot_pop_res <- .step("boot_popblock_wc84_fst_auto()",boot_popblock_wc84_fst_auto(
         mat            = mat,
         pop_col_1based = 1L,
@@ -2617,7 +2636,9 @@ server_general_stats <- function(id, rv) {
       overall_row <- overall_row[, names(res_tbl), drop = FALSE]
       
       final_results <- rbind(res_tbl, overall_row)
-      
+
+      .bump_progress(95, "Finalising results...")
+
       list(
         final_table      = final_results,
         locus_boot_table = locus_boot_tbl,
@@ -2678,16 +2699,19 @@ server_general_stats <- function(id, rv) {
       tryCatch({
         start_time <- Sys.time()
         
-        shinyWidgets::updateProgressBar(session, "fst_progress", value = 15)
+        shinyWidgets::updateProgressBar(session, "fst_progress", value = 0,
+                                         title = "Starting FST analysis...")
         
         results <- run_bootstrap_fst_analysis(
           n_perm         = input$n_perm_fst,
           n_boot         = input$n_boot_fst,
           conf_level     = input$conf_level_fst,
-          missing_code   = 0L
+          missing_code   = 0L,
+          progress_id    = "fst_progress"
         )
         
-        shinyWidgets::updateProgressBar(session, "fst_progress", value = 100)
+        shinyWidgets::updateProgressBar(session, "fst_progress", value = 100,
+                                         title = "Done")
         
         duration <- round(as.numeric(difftime(Sys.time(), start_time, units = "secs")), 1)
         fst_boot_timing(duration)
@@ -2727,16 +2751,19 @@ server_general_stats <- function(id, rv) {
       tryCatch({
         start_time <- Sys.time()
 
-        shinyWidgets::updateProgressBar(session, "fst_progress_div", value = 15)
+        shinyWidgets::updateProgressBar(session, "fst_progress_div", value = 0,
+                                         title = "Starting FST analysis...")
 
         results <- run_bootstrap_fst_analysis(
           n_perm         = input$n_perm_fst_div,
           n_boot         = input$n_boot_fst_div,
           conf_level     = if (!is.null(input$conf_level_fst_div)) input$conf_level_fst_div else 0.95,
-          missing_code   = 0L
+          missing_code   = 0L,
+          progress_id    = "fst_progress_div"
         )
 
-        shinyWidgets::updateProgressBar(session, "fst_progress_div", value = 100)
+        shinyWidgets::updateProgressBar(session, "fst_progress_div", value = 100,
+                                         title = "Done")
 
         duration <- round(as.numeric(difftime(Sys.time(), start_time, units = "secs")), 1)
         fst_boot_timing(duration)
@@ -2892,13 +2919,71 @@ server_general_stats <- function(id, rv) {
       
       valueBox(
         value = display,
-        subtitle = HTML("<small>Global <i>p</i>-value<br>Bilateral test</small>"),
+        subtitle = HTML("<small>Global <i>p</i>-value<br>One-sided (FST \u2265 obs.)</small>"),
         color = color,
         icon = icon("balance-scale"),
         width = NULL
       )
     })
-    
+
+    ### CI width (Overall, subsample bootstrap) ----
+    output$fst_ci_width_box <- renderValueBox({
+      shiny::req(fst_boot_results())
+      row <- fst_boot_results()$final_table %>% dplyr::filter(ID == "Overall")
+      width <- if (nrow(row) == 1L) row$CI_U[1] - row$CI_L[1] else NA_real_
+      valueBox(
+        value    = if (is.na(width)) "N/A" else format(round(width, 4), nsmall = 4),
+        subtitle = HTML("<small>CI width (Overall)<br>subsample bootstrap</small>"),
+        color    = if (is.na(width)) "red" else "light-blue",
+        icon     = icon("arrows-left-right"), width = NULL
+      )
+    })
+
+    ### Power proxy (Overall, 1 - p-value) ----
+    output$fst_power_box <- renderValueBox({
+      shiny::req(fst_boot_results())
+      p <- fst_boot_results()$final_table %>%
+        dplyr::filter(ID == "Overall") %>% dplyr::pull(P_value)
+      p <- p[1]
+      power <- if (is.na(p)) NA_real_ else 1 - p
+      valueBox(
+        value    = if (is.na(power)) "N/A" else paste0(round(100 * power, 1), "%"),
+        subtitle = HTML("<small>Power proxy<br>(1 \u2212 p-value)</small>"),
+        color    = "teal", icon = icon("bolt"), width = NULL
+      )
+    })
+
+    ### Bootstrap convergence (fraction of finite Overall bootstrap replicates) ----
+    output$fst_convergence_box <- renderValueBox({
+      shiny::req(fst_boot_results())
+      boot_overall <- fst_boot_results()$bootstrap_results$overall_boot
+      n_req  <- fst_boot_results()$metadata$n_bootstrap %||% length(boot_overall)
+      n_ok   <- if (is.null(boot_overall)) 0L else sum(is.finite(boot_overall))
+      pct    <- if (is.null(boot_overall) || length(boot_overall) == 0L) NA_real_
+                 else round(100 * n_ok / length(boot_overall), 1)
+      color  <- if (is.na(pct)) "red" else if (pct >= 99) "green" else if (pct >= 90) "yellow" else "red"
+      valueBox(
+        value    = if (is.na(pct)) "N/A" else paste0(pct, "%"),
+        subtitle = HTML(paste0("<small>Bootstrap convergence<br>", n_ok, " / ", n_req, " valid replicates</small>")),
+        color    = color, icon = icon("check-circle"), width = NULL
+      )
+    })
+
+    ### Data quality (loci with a defined observed FST) ----
+    output$fst_quality_box <- renderValueBox({
+      shiny::req(fst_boot_results())
+      df <- fst_boot_results()$final_table %>% dplyr::filter(ID != "Overall")
+      total   <- nrow(df)
+      defined <- sum(!is.na(df$Observed_FST))
+      pct     <- if (total > 0) round(100 * defined / total, 1) else NA_real_
+      color   <- if (is.na(pct)) "red" else if (pct == 100) "green" else if (pct >= 80) "yellow" else "red"
+      valueBox(
+        value    = paste0(defined, " / ", total),
+        subtitle = HTML(paste0("<small>Loci with defined FST<br>", ifelse(is.na(pct), "N/A", paste0(pct, "%")), " of total</small>")),
+        color    = color, icon = icon("clipboard-check"), width = NULL
+      )
+    })
+
     ### Significant loci ----
     output$significant_loci_fst_box <- renderValueBox({
       shiny::req(fst_boot_results())
