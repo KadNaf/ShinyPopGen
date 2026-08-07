@@ -8,7 +8,7 @@
 # References:
 #   Dempster, Laird & Rubin (1977)  — EM algorithm
 #   Chapuis & Estoup (2007)         — FreeNA: ENA and INA corrections
-#   Weir & Cockerham (1984)          — FST estimator
+#   Weir (1996)                     — FST following Genepop method
 #   Cavalli-Sforza & Edwards (1967) — Chord genetic distance (DCSE)
 
 null_alleles_UI <- function(id) {
@@ -141,7 +141,7 @@ null_alleles_UI <- function(id) {
         " Null Allele Estimation \u00b7 FST-ENA \u00b7 DCSE-INA"),
       tags$div(class="na-header-sub",
         "EM algorithm \u00b7 Dempster, Laird & Rubin (1977) \u00b7 FreeNA \u2014 Chapuis & Estoup (2007)",
-        " \u00b7 Weir & Cockerham (1984) \u00b7 Cavalli-Sforza & Edwards (1967)"),
+        " \u00b7 Weir (1996) \u00b7 Cavalli-Sforza & Edwards (1967)"),
       tags$div(class="na-badges",
         tags$span(class="na-badge na-badge-blue",  "EM \u2014 null allele frequency"),
         tags$span(class="na-badge na-badge-teal",  "ENA \u2014 FST corrected"),
@@ -203,28 +203,19 @@ null_alleles_UI <- function(id) {
         tags$strong("Bootstrap parameters", style="font-size:12px; color:#1e293b;"),
         tags$br(), tags$br(),
         fluidRow(
-          column(3,
+          column(4,
             numericInput(ns("nboot"),
               label = "Number of replicates (bootstrap over loci):",
               value = 5000, min = 100, max = 99999, step = 1000)),
-          column(3,
+          column(4,
             numericInput(ns("nboot_subs"),
               label = "Number of replicates (bootstrap over sub-samples):",
               value = 5000, min = 100, max = 99999, step = 1000)),
-          column(3,
+          column(4,
             numericInput(ns("alpha"),
               label = "Confidence interval — alpha:",
-              value = 0.05, min = 0.0001, max = 0.5, step = 0.01)),
-          column(3,
-            numericInput(ns("boot_seed"),
-              label = "Random seed (reproducibility):",
-              value = 12345, min = 1, max = 999999, step = 1))
+              value = 0.05, min = 0.0001, max = 0.5, step = 0.01))
         ),
-        tags$p(style="color:#777;font-size:11px;",
-          "Same seed + same settings = identical bootstrap results every run. The confidence ",
-          "interval in File 2 and the full replicate distribution in File 5 always come from the ",
-          "same bootstrap run, so they match exactly \u2014 if you compare them across two different runs ",
-          "(different seed, or seed changed), small differences are expected since the bootstrap draw itself differs."),
 
         tags$hr(style="margin:1rem 0;"),
 
@@ -236,17 +227,17 @@ null_alleles_UI <- function(id) {
             tags$div(style="display:flex; align-items:flex-end; gap:8px;",
               tags$div(style="flex:1;",
                 textInput(ns("out_dir_display"), "Please choose a folder for output files:",
-                          value = "", placeholder = "(paste/type a folder path, or use Browse if available)")),
-              uiOutput(ns("ui_dir_browse_btn"), inline = TRUE))),
+                          value = "", placeholder = "(no folder chosen \u2014 files download to your browser instead)")),
+              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
+                                          class = "btn-action-secondary", style="margin-bottom:15px;"))),
           column(6,
-            textInput(ns("out_root"), "Root for the name of output files (from your data file — edit/extend freely):",
-                      value = "", placeholder = "auto-filled once your data is loaded"))
+            textInput(ns("out_root"), "Please choose a root for the name of output files:",
+                      value = "", placeholder = "e.g. BoophilusAdultsDataCattle"))
         ),
         tags$p(style="color:#777;font-size:11px;",
           "File names = root + description (e.g. ", tags$code("<root>null_allele_frequencies.txt"),
-          "). The root is pre-filled from your data file's name and is fully yours to edit — ",
-          "add anything you like (e.g. which loci were recoded 999). No date is added to file names ",
-          "(already shown by the file explorer) \u2014 use the optional suffix below to tell two runs apart."),
+          "). No date is added (already shown by the file explorer) \u2014 if you re-run with a ",
+          "different missing-data coding and want to keep both results, add your own suffix below."),
         textInput(ns("out_suffix"), "Optional suffix to distinguish this run (e.g. \"1\"):", value = ""),
         tags$p(style="color:#777;font-size:11px;",
           "Files are saved as tab-delimited ", tags$strong(".txt"), " (not .csv)."),
@@ -382,7 +373,7 @@ null_alleles_UI <- function(id) {
                value = "tab_fst", br(),
 
         tags$div(class="na-info",
-          tags$strong("Global multilocus FST"), " \u2014 Weir & Cockerham (1984). ",
+          tags$strong("Global multilocus FST"), " \u2014 Weir (1996) / Genepop method. ",
           tags$strong("FST-ENA"), ": EM-corrected frequencies, Excluding Null Alleles \u2014 Chapuis & Estoup (2007).",
           tags$br(),
           "Bootstrap CI over loci (resample loci with replacement) and over sub-samples ",
