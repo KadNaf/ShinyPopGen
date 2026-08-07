@@ -11,7 +11,7 @@ All dependencies install automatically:
 ```r
 install.packages("remotes")
 
-remotes::install_github("KadNaf/SPG1")
+remotes::install_github("KadNaf/SPG1-V1")
 
 shinypopgen::run_app()
 ```
