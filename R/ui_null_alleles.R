@@ -15,9 +15,9 @@ null_alleles_UI <- function(id) {
   ns <- NS(id)
 
   custom_css <- tags$style(HTML("
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+    
 
-    .na-module * { font-family: 'IBM Plex Sans', sans-serif; }
+    .na-module * { font-family: 'Segoe UI','IBM Plex Sans',Arial,sans-serif; }
 
     /* ── Header ─────────────────────────────────────────────────────── */
     .na-header {
@@ -32,9 +32,9 @@ null_alleles_UI <- function(id) {
         rgba(255,255,255,.018) 28px, rgba(255,255,255,.018) 29px);
     }
     .na-header-title { font-size:1.05rem; font-weight:600; color:#f1f5f9; letter-spacing:.01em; margin-bottom:.2rem; }
-    .na-header-sub   { font-size:.75rem; color:#94a3b8; font-family:'IBM Plex Mono',monospace; }
+    .na-header-sub   { font-size:.75rem; color:#94a3b8; font-family:'Consolas','IBM Plex Mono',monospace; }
     .na-badges { display:flex; gap:6px; margin-top:.5rem; flex-wrap:wrap; }
-    .na-badge  { display:inline-block; border-radius:20px; padding:2px 10px; font-size:.67rem; font-family:'IBM Plex Mono',monospace; }
+    .na-badge  { display:inline-block; border-radius:20px; padding:2px 10px; font-size:.67rem; font-family:'Consolas','IBM Plex Mono',monospace; }
     .na-badge-blue   { background:rgba(56,189,248,.15);  border:1px solid rgba(56,189,248,.3);  color:#38bdf8; }
     .na-badge-green  { background:rgba(74,222,128,.12);  border:1px solid rgba(74,222,128,.3);  color:#4ade80; }
     .na-badge-amber  { background:rgba(251,191,36,.12);  border:1px solid rgba(251,191,36,.3);  color:#fbbf24; }
@@ -45,7 +45,7 @@ null_alleles_UI <- function(id) {
     .na-vbox { flex:1; min-width:110px; background:#fff; border:1px solid #e2e8f0; border-radius:9px; padding:.6rem .85rem; display:flex; align-items:center; gap:9px; }
     .na-vbox-icon  { width:30px; height:30px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:12px; flex-shrink:0; }
     .na-vbox-label { font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:.06em; margin-bottom:1px; }
-    .na-vbox-val   { font-size:18px; font-weight:600; color:#0f172a; line-height:1.1; font-family:'IBM Plex Mono',monospace; }
+    .na-vbox-val   { font-size:18px; font-weight:600; color:#0f172a; line-height:1.1; font-family:'Consolas','IBM Plex Mono',monospace; }
 
     /* ── Panels ──────────────────────────────────────────────────────── */
     .na-panel { background:#fff; border:1px solid #e2e8f0; border-radius:9px; margin-bottom:.85rem; overflow:hidden; }
@@ -66,15 +66,15 @@ null_alleles_UI <- function(id) {
     .na-locus-grid { display:flex; flex-wrap:wrap; gap:8px; margin-top:.5rem; }
     .na-locus-item {
       background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;
-      padding:.45rem .7rem; min-width:160px; flex:1;
+      padding:.5rem .8rem; min-width:180px; flex:1;
     }
     .na-locus-item .control-label { display:none; } /* hide redundant label */
     .na-locus-name {
-      font-size:11px; font-weight:700; color:#1e293b;
-      font-family:'IBM Plex Mono',monospace; margin-bottom:3px;
+      font-size:22px; font-weight:800; color:#0f172a;
+      font-family:'Consolas','IBM Plex Mono',monospace; margin-bottom:5px;
     }
     .na-locus-item .radio { margin:2px 0; }
-    .na-locus-item .radio label { font-size:11px; color:#475569; }
+    .na-locus-item .radio label { font-size:13px; color:#334155; }
 
     /* ── Buttons ─────────────────────────────────────────────────────── */
     .na-btn-run {
@@ -96,14 +96,14 @@ null_alleles_UI <- function(id) {
     .na-boot-result {
       background:#faf5ff; border:1px solid #d8b4fe; border-radius:8px;
       padding:.65rem 1rem; font-size:11.5px; color:#3b0764;
-      font-family:'IBM Plex Mono',monospace; line-height:1.9;
+      font-family:'Consolas','IBM Plex Mono',monospace; line-height:1.9;
       margin-top:.75rem;
     }
     .na-boot-result strong { color:#6d28d9; }
 
     /* ── Matrix table ────────────────────────────────────────────────── */
     .na-matrix-wrap { overflow-x:auto; margin-top:.5rem; }
-    .na-matrix { border-collapse:collapse; font-size:11px; font-family:'IBM Plex Mono',monospace; width:100%; }
+    .na-matrix { border-collapse:collapse; font-size:11px; font-family:'Consolas','IBM Plex Mono',monospace; width:100%; }
     .na-matrix th { background:#f8fafc; color:#475569; font-weight:600; padding:4px 9px; border:1px solid #e2e8f0; font-size:10.5px; white-space:nowrap; }
     .na-matrix td { padding:4px 9px; border:1px solid #e2e8f0; color:#1e293b; text-align:right; white-space:nowrap; font-size:11px; }
     .na-matrix tr:nth-child(even) td { background:#f8fafc; }
@@ -119,11 +119,11 @@ null_alleles_UI <- function(id) {
     .na-module .dataTables_wrapper { font-size:12px; }
     .na-module table.dataTable thead th {
       background:#f8fafc !important; color:#475569 !important;
-      font-family:'IBM Plex Mono',monospace !important;
+      font-family:'Consolas','IBM Plex Mono',monospace !important;
       font-size:10.5px !important; font-weight:600 !important;
     }
     .na-module table.dataTable tbody td {
-      font-family:'IBM Plex Mono',monospace !important;
+      font-family:'Consolas','IBM Plex Mono',monospace !important;
       font-size:11px !important; color:#1e293b !important;
     }
     .na-module .nav-tabs > li > a { font-size:12px; font-weight:500; color:#475569; padding:5px 13px; }
@@ -138,7 +138,7 @@ null_alleles_UI <- function(id) {
     # ── Header ─────────────────────────────────────────────────────────────
     tags$div(class="na-header",
       tags$div(class="na-header-title",
-        icon("atom"), " Null Allele Estimation \u00b7 FST-ENA \u00b7 DCSE-INA"),
+        " Null Allele Estimation \u00b7 FST-ENA \u00b7 DCSE-INA"),
       tags$div(class="na-header-sub",
         "EM algorithm \u00b7 Dempster, Laird & Rubin (1977) \u00b7 FreeNA \u2014 Chapuis & Estoup (2007)",
         " \u00b7 Weir (1996) \u00b7 Cavalli-Sforza & Edwards (1967)"),
@@ -153,65 +153,54 @@ null_alleles_UI <- function(id) {
     # ── Value boxes ─────────────────────────────────────────────────────────
     tags$div(class="na-vbox-row",
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("dna")),
+        tags$div(class="na-vbox-icon",style="background:#e0f2fe;color:#0369a1;"),
         tags$div(tags$div(class="na-vbox-label","Loci"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_loci"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#dcfce7;color:#166534;",icon("map-marker-alt")),
+        tags$div(class="na-vbox-icon",style="background:#dcfce7;color:#166534;"),
         tags$div(tags$div(class="na-vbox-label","Populations"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_pops"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("users")),
+        tags$div(class="na-vbox-icon",style="background:#f3e8ff;color:#7e22ce;"),
         tags$div(tags$div(class="na-vbox-label","Individuals"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_n"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#fef9c3;color:#854d0e;",icon("percentage")),
+        tags$div(class="na-vbox-icon",style="background:#fef9c3;color:#854d0e;"),
         tags$div(tags$div(class="na-vbox-label","Avg p_nulls"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_avg_null"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#fce7f3;color:#9d174d;",icon("exclamation-triangle")),
+        tags$div(class="na-vbox-icon",style="background:#fce7f3;color:#9d174d;"),
         tags$div(tags$div(class="na-vbox-label","Max p_nulls"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_max_null"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#ccfbf1;color:#0d9488;",icon("chart-bar")),
+        tags$div(class="na-vbox-icon",style="background:#ccfbf1;color:#0d9488;"),
         tags$div(tags$div(class="na-vbox-label","Global FST-ENA"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_fst_ena")))))
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # SETUP PANEL — 3 user choices only
+    # SETUP PANEL
     # ════════════════════════════════════════════════════════════════════════
     tags$div(class="na-panel",
       tags$div(class="na-panel-head",
-        tags$div(class="na-panel-title",
-          icon("sliders-h"), " Setup — 3 parameters to configure")),
+        tags$div(class="na-panel-title","Setup")),
       tags$div(class="na-panel-body",
 
-        # ── (1) Missing genotype coding per locus (your choice, suggested) ──
+        # ── (1) Missing genotype coding per locus ────────────────────────────
         tags$div(class="na-warn",
-          icon("exclamation-triangle"), " ",
-          tags$strong("(1) Missing genotype coding per locus — your choice"),
-          tags$br(),
-          tags$span(style="font-size:11px;",
-            "For each locus, choose how its blanks should enter the EM algorithm: ",
-            tags$strong("000000"), " — treat blanks as uninformative absent / PCR failure, or ",
-            tags$strong("999999"), " — treat blanks as informative null homozygotes.",
-            tags$br(),
-            "A suggestion is pre-selected for each locus based on what your data actually contains ",
-            "(does it carry a literal 999999-style genotype anywhere for that locus?), but the final ",
-            "choice is always yours — pick the other option if you know better for a given locus.",
-            tags$br(),
-            "Tick ", tags$strong("\"Flag for recoding sensitivity check\""),
-            " to mark a locus for your own reference (exported as the ", tags$code("Recode"),
-            " column) — this does not change the computation."
-          )
+          tags$p(style="margin:.25rem 0;",
+            "Please choose how to code missing data for each locus:", tags$br(),
+            tags$strong("0"), " = true missing data (ignored by the algorithm);", tags$br(),
+            tags$strong("999999"), " = homozygote for allele 999 (code for all null alleles)"),
+          tags$p(style="margin:.5rem 0 0;font-weight:600;color:#92400e;",
+            "Please make sure you do not already have any allele coded as 999.")
         ),
         uiOutput(ns("locus_coding_ui")),
 
         tags$hr(style="margin:1rem 0;"),
 
         # ── (2) Bootstrap parameters ────────────────────────────────────────
-        tags$strong("(2) Bootstrap parameters", style="font-size:12px; color:#1e293b;"),
+        tags$strong("Bootstrap parameters", style="font-size:12px; color:#1e293b;"),
         tags$br(), tags$br(),
         fluidRow(
           column(4,
@@ -221,32 +210,37 @@ null_alleles_UI <- function(id) {
           column(4,
             numericInput(ns("nboot_subs"),
               label = "Number of replicates (bootstrap over sub-samples):",
-              value = 500, min = 50, max = 20000, step = 50)),
+              value = 5000, min = 100, max = 99999, step = 1000)),
           column(4,
-            selectInput(ns("ci_level"),
-              label = "Confidence interval level:",
-              choices = c(
-                "99.99% (alpha = 0.0001)" = "0.0001",
-                "99.9%  (alpha = 0.001)"  = "0.001",
-                "99%    (alpha = 0.01)"   = "0.01",
-                "95%    (alpha = 0.05)"   = "0.05",
-                "90%    (alpha = 0.10)"   = "0.10"
-              ),
-              selected = "0.05"))
+            numericInput(ns("alpha"),
+              label = "Confidence interval — alpha:",
+              value = 0.05, min = 0.0001, max = 0.5, step = 0.01))
         ),
-        tags$div(class="na-info", style="margin-top:.5rem;",
-          icon("info-circle"), " ",
-          tags$strong("Bootstrap over loci"), " is vectorised — 5\u202f000 reps run in a few seconds, regardless of value.",
-          tags$br(),
-          tags$strong("Bootstrap over sub-samples"), " re-runs the EM algorithm for every (replicate \u00d7 locus \u00d7 population) ",
-          "combination, so it has its own, smaller replicate count by default. Each EM run inside this bootstrap is also capped ",
-          "at ", tags$strong("100 iterations"), " (instead of 5\u202f000) since a bootstrap replicate doesn't need the same precision ",
-          "as the main point estimate \u2014 this keeps the wall-clock time reasonable without changing the statistical method.",
-          tags$br(),
-          tags$strong("Note: "), "the sub-samples bootstrap CI can occasionally sit slightly above the observed FST ",
-          "(i.e. the point estimate falls just under its own lower bound). This is a known property of resampling ",
-          "individuals \u2014 duplicated individuals in a replicate raise its apparent structure \u2014 not a computation error."
+
+        tags$hr(style="margin:1rem 0;"),
+
+        # ── (3) Output files ─────────────────────────────────────────────────
+        tags$strong("Output files", style="font-size:12px; color:#1e293b;"),
+        tags$br(), tags$br(),
+        fluidRow(
+          column(6,
+            tags$div(style="display:flex; align-items:flex-end; gap:8px;",
+              tags$div(style="flex:1;",
+                textInput(ns("out_dir_display"), "Please choose a folder for output files:",
+                          value = "", placeholder = "(no folder chosen \u2014 files download to your browser instead)")),
+              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
+                                          class = "btn-action-secondary", style="margin-bottom:15px;"))),
+          column(6,
+            textInput(ns("out_root"), "Please choose a root for the name of output files:",
+                      value = "", placeholder = "e.g. BoophilusAdultsDataCattle"))
         ),
+        tags$p(style="color:#777;font-size:11px;",
+          "File names = root + description (e.g. ", tags$code("<root>null_allele_frequencies.txt"),
+          "). No date is added (already shown by the file explorer) \u2014 if you re-run with a ",
+          "different missing-data coding and want to keep both results, add your own suffix below."),
+        textInput(ns("out_suffix"), "Optional suffix to distinguish this run (e.g. \"1\"):", value = ""),
+        tags$p(style="color:#777;font-size:11px;",
+          "Files are saved as tab-delimited ", tags$strong(".txt"), " (not .csv)."),
 
         tags$hr(style="margin:1rem 0;"),
 
@@ -257,7 +251,7 @@ null_alleles_UI <- function(id) {
         fluidRow(
           column(4,
             actionButton(ns("run_all"),
-              label = tagList(icon("play"), tags$strong("  Compute + Bootstrap + Export")),
+              label = tagList(tags$strong("  Compute + Bootstrap + Export")),
               class = "na-btn-run btn",
               width = "100%"))
         ),
@@ -271,72 +265,73 @@ null_alleles_UI <- function(id) {
     # ════════════════════════════════════════════════════════════════════════
     tags$div(class="na-panel",
       tags$div(class="na-panel-head",
-        tags$div(class="na-panel-title",
-          icon("file-download"), " Output files — automatically generated after computation")),
+        tags$div(class="na-panel-title", " Output files")),
       tags$div(class="na-panel-body",
-        tags$div(class="na-info",
-          icon("info-circle"), " ",
-          "All four files are generated automatically when you click Compute above.",
-          " Each file includes the method, references, locus coding, and bootstrap parameters."
-        ),
         fluidRow(
           # File 1
-          column(3,
+          column(2,
             tags$div(class="na-panel", style="border-color:#bfdbfe;",
               tags$div(class="na-panel-head", style="background:#eff6ff;",
-                tags$div(class="na-panel-title", style="color:#1d4ed8;",
-                  icon("file-alt"), " File 1 — Null allele frequencies")),
+                tags$div(class="na-panel-title", style="color:#1d4ed8;font-size:11px;",
+                  uiOutput(ns("ui_filename_1"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
-                "p_nulls per locus \u00d7 population",
+                "p_nulls per locus \u00d7 subsample",
                 tags$br(), "Global weighted mean per locus",
-                tags$br(), "Locus coding reminder",
                 tags$br(), br(),
                 uiOutput(ns("ui_dl_file1"))
               )
             )
           ),
           # File 2
-          column(3,
+          column(2,
             tags$div(class="na-panel", style="border-color:#99f6e4;",
               tags$div(class="na-panel-head", style="background:#f0fdfa;",
-                tags$div(class="na-panel-title", style="color:#0d9488;",
-                  icon("chart-bar"), " File 2 — Global FST & FST-ENA")),
+                tags$div(class="na-panel-title", style="color:#0d9488;font-size:11px;",
+                  uiOutput(ns("ui_filename_2"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "Per locus + multilocus FST / FST-ENA",
-                tags$br(), "CI from bootstrap over loci",
-                tags$br(), "CI from bootstrap over sub-samples",
-                tags$br(), "Both CIs for global values",
+                tags$br(), "CI over loci and over sub-samples",
                 uiOutput(ns("ui_dl_file2"))
               )
             )
           ),
           # File 3
-          column(3,
+          column(2,
             tags$div(class="na-panel", style="border-color:#e9d5ff;",
               tags$div(class="na-panel-head", style="background:#faf5ff;",
-                tags$div(class="na-panel-title", style="color:#7c3aed;",
-                  icon("table"), " File 3 — Pairwise long format")),
+                tags$div(class="na-panel-title", style="color:#7c3aed;font-size:11px;",
+                  uiOutput(ns("ui_filename_3"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "FST, FST-ENA, DCSE, DCSE-INA",
-                tags$br(), "Per pair of sub-samples",
-                tags$br(), "All loci combined",
-                tags$br(), "CI from bootstrap over loci",
+                tags$br(), "Per pair of sub-samples, all loci combined",
                 uiOutput(ns("ui_dl_file3"))
               )
             )
           ),
           # File 4
-          column(3,
+          column(2,
             tags$div(class="na-panel", style="border-color:#fcd34d;",
               tags$div(class="na-panel-head", style="background:#fffbeb;",
-                tags$div(class="na-panel-title", style="color:#92400e;",
-                  icon("th"), " File 4 — Per-locus half-matrices")),
+                tags$div(class="na-panel-title", style="color:#92400e;font-size:11px;",
+                  uiOutput(ns("ui_filename_4"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "FST, FST-ENA, DCSE, DCSE-INA",
-                tags$br(), "Half-matrix per locus",
-                tags$br(), "Per pair of sub-samples",
-                tags$br(), br(),
+                tags$br(), "Half-matrix per locus, per pair",
                 uiOutput(ns("ui_dl_file4"))
+              )
+            )
+          ),
+          # File 5
+          column(4,
+            tags$div(class="na-panel", style="border-color:#fca5a5;",
+              tags$div(class="na-panel-head", style="background:#fef2f2;",
+                tags$div(class="na-panel-title", style="color:#991b1b;font-size:11px;",
+                  uiOutput(ns("ui_filename_5"), inline=TRUE))),
+              tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
+                "All bootstrap replicate values (over loci and over sub-samples)",
+                tags$br(),
+                uiOutput(ns("ui_dl_file5"))
+                # plotly::plotlyOutput(ns("boot_dist_plot"), height="220px")
               )
             )
           )
@@ -350,10 +345,9 @@ null_alleles_UI <- function(id) {
     tabsetPanel(id = ns("na_tabs"), type = "tabs",
 
       # ── TAB 1: Null allele frequencies ────────────────────────────────── #
-      tabPanel(title = tagList(icon("dna"), " Null allele frequencies"),
+      tabPanel(title = tagList(" Null allele frequencies"),
                value = "tab_na", br(),
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           "Reproduces FreeNA's own null-allele-frequency report: the EM algorithm ",
           "(Dempster, Laird & Rubin 1977) estimated per locus \u00d7 population below, ",
           "and the N-weighted per-locus summary (Av(p_nulls), Av(N_exp_blanks), ",
@@ -362,24 +356,23 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " p_nulls per locus \u00d7 population (EM algorithm)")),
+              " p_nulls per locus \u00d7 population (EM algorithm)")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_t1")))),
         tags$br(),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("globe"), " Per-locus summary (N-weighted mean, FreeNA report format)")),
+              " Per-locus summary (N-weighted mean, FreeNA report format)")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_t2"))))
       ),
 
       # ── TAB 2: FST & FST-ENA ──────────────────────────────────────────── #
-      tabPanel(title = tagList(icon("chart-bar"), " FST / FST-ENA"),
+      tabPanel(title = tagList(" FST / FST-ENA"),
                value = "tab_fst", br(),
 
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           tags$strong("Global multilocus FST"), " \u2014 Weir (1996) / Genepop method. ",
           tags$strong("FST-ENA"), ": EM-corrected frequencies, Excluding Null Alleles \u2014 Chapuis & Estoup (2007).",
           tags$br(),
@@ -390,7 +383,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " Per-locus FST and FST-ENA")),
+              " Per-locus FST and FST-ENA")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_fst_global")))),
         br(),
@@ -398,7 +391,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("random"), " Bootstrap CI \u2014 Global FST and FST-ENA")),
+              " Bootstrap CI \u2014 Global FST and FST-ENA")),
           tags$div(class="na-panel-body",
             uiOutput(ns("ui_boot_global_fst")))),
         br(),
@@ -406,7 +399,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("exchange-alt"), " Pairwise FST and FST-ENA \u2014 lower triangle matrix")),
+              " Pairwise FST and FST-ENA \u2014 lower triangle matrix")),
           tags$div(class="na-panel-body",
             fluidRow(
               column(5,
@@ -422,17 +415,16 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("random"), " Bootstrap CI \u2014 Pairwise FST-ENA (over loci)")),
+              " Bootstrap CI \u2014 Pairwise FST-ENA (over loci)")),
           tags$div(class="na-panel-body",
             uiOutput(ns("ui_boot_pair_fst"))))
       ),
 
       # ── TAB 3: DCSE / DCSE-INA ────────────────────────────────────────── #
-      tabPanel(title = tagList(icon("ruler-combined"), " DCSE / DCSE-INA"),
+      tabPanel(title = tagList(" DCSE / DCSE-INA"),
                value = "tab_dc", br(),
 
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           tags$strong("Cavalli-Sforza & Edwards (1967) chord distance."),
           " DCSE-INA includes the null allele as an extra state \u2014 Chapuis & Estoup (2007).",
           tags$br(),
@@ -443,7 +435,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("th"), " Pairwise DCSE and DCSE-INA \u2014 lower triangle matrix")),
+              " Pairwise DCSE and DCSE-INA \u2014 lower triangle matrix")),
           tags$div(class="na-panel-body",
             fluidRow(
               column(5,
@@ -459,17 +451,16 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("random"), " Bootstrap CI \u2014 Pairwise DCSE-INA (over loci)")),
+              " Bootstrap CI \u2014 Pairwise DCSE-INA (over loci)")),
           tags$div(class="na-panel-body",
             uiOutput(ns("ui_boot_pair_dc"))))
       ),
 
       # ── TAB 4: Per-locus x pair ───────────────────────────────────────── #
-      tabPanel(title = tagList(icon("table"), " Per-locus \u00d7 pair"),
+      tabPanel(title = tagList(" Per-locus \u00d7 pair"),
                value = "tab_locus_pair", br(),
 
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           "FST, FST-ENA, DCSE and DCSE-INA for each locus \u00d7 pair of populations.",
           " Useful for detecting outlier loci."
         ),
@@ -486,7 +477,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " FST and FST-ENA per locus \u00d7 pair")),
+              " FST and FST-ENA per locus \u00d7 pair")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_fst_locus")))),
         br(),
@@ -494,7 +485,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " DCSE and DCSE-INA per locus \u00d7 pair")),
+              " DCSE and DCSE-INA per locus \u00d7 pair")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_dc_locus"))))
       )
