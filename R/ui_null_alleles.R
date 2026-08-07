@@ -8,7 +8,7 @@
 # References:
 #   Dempster, Laird & Rubin (1977)  — EM algorithm
 #   Chapuis & Estoup (2007)         — FreeNA: ENA and INA corrections
-#   Weir (1996)                     — FST following Genepop method
+#   Weir & Cockerham (1984)          — FST estimator
 #   Cavalli-Sforza & Edwards (1967) — Chord genetic distance (DCSE)
 
 null_alleles_UI <- function(id) {
@@ -138,10 +138,10 @@ null_alleles_UI <- function(id) {
     # ── Header ─────────────────────────────────────────────────────────────
     tags$div(class="na-header",
       tags$div(class="na-header-title",
-        icon("atom"), " Null Allele Estimation \u00b7 FST-ENA \u00b7 DCSE-INA"),
+        " Null Allele Estimation \u00b7 FST-ENA \u00b7 DCSE-INA"),
       tags$div(class="na-header-sub",
         "EM algorithm \u00b7 Dempster, Laird & Rubin (1977) \u00b7 FreeNA \u2014 Chapuis & Estoup (2007)",
-        " \u00b7 Weir (1996) \u00b7 Cavalli-Sforza & Edwards (1967)"),
+        " \u00b7 Weir & Cockerham (1984) \u00b7 Cavalli-Sforza & Edwards (1967)"),
       tags$div(class="na-badges",
         tags$span(class="na-badge na-badge-blue",  "EM \u2014 null allele frequency"),
         tags$span(class="na-badge na-badge-teal",  "ENA \u2014 FST corrected"),
@@ -153,27 +153,27 @@ null_alleles_UI <- function(id) {
     # ── Value boxes ─────────────────────────────────────────────────────────
     tags$div(class="na-vbox-row",
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#e0f2fe;color:#0369a1;",icon("dna")),
+        tags$div(class="na-vbox-icon",style="background:#e0f2fe;color:#0369a1;"),
         tags$div(tags$div(class="na-vbox-label","Loci"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_loci"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#dcfce7;color:#166534;",icon("map-marker-alt")),
+        tags$div(class="na-vbox-icon",style="background:#dcfce7;color:#166534;"),
         tags$div(tags$div(class="na-vbox-label","Populations"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_pops"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#f3e8ff;color:#7e22ce;",icon("users")),
+        tags$div(class="na-vbox-icon",style="background:#f3e8ff;color:#7e22ce;"),
         tags$div(tags$div(class="na-vbox-label","Individuals"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_n"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#fef9c3;color:#854d0e;",icon("percentage")),
+        tags$div(class="na-vbox-icon",style="background:#fef9c3;color:#854d0e;"),
         tags$div(tags$div(class="na-vbox-label","Avg p_nulls"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_avg_null"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#fce7f3;color:#9d174d;",icon("exclamation-triangle")),
+        tags$div(class="na-vbox-icon",style="background:#fce7f3;color:#9d174d;"),
         tags$div(tags$div(class="na-vbox-label","Max p_nulls"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_max_null"))))),
       tags$div(class="na-vbox",
-        tags$div(class="na-vbox-icon",style="background:#ccfbf1;color:#0d9488;",icon("chart-bar")),
+        tags$div(class="na-vbox-icon",style="background:#ccfbf1;color:#0d9488;"),
         tags$div(tags$div(class="na-vbox-label","Global FST-ENA"),
                  tags$div(class="na-vbox-val",uiOutput(ns("vb_fst_ena")))))
     ),
@@ -183,13 +183,11 @@ null_alleles_UI <- function(id) {
     # ════════════════════════════════════════════════════════════════════════
     tags$div(class="na-panel",
       tags$div(class="na-panel-head",
-        tags$div(class="na-panel-title",
-          icon("sliders-h"), " Setup")),
+        tags$div(class="na-panel-title","Setup")),
       tags$div(class="na-panel-body",
 
         # ── (1) Missing genotype coding per locus ────────────────────────────
         tags$div(class="na-warn",
-          icon("exclamation-triangle"), " ",
           tags$p(style="margin:.25rem 0;",
             "Please choose how to code missing data for each locus:", tags$br(),
             tags$strong("0"), " = true missing data (ignored by the algorithm);", tags$br(),
@@ -205,19 +203,28 @@ null_alleles_UI <- function(id) {
         tags$strong("Bootstrap parameters", style="font-size:12px; color:#1e293b;"),
         tags$br(), tags$br(),
         fluidRow(
-          column(4,
+          column(3,
             numericInput(ns("nboot"),
               label = "Number of replicates (bootstrap over loci):",
               value = 5000, min = 100, max = 99999, step = 1000)),
-          column(4,
+          column(3,
             numericInput(ns("nboot_subs"),
               label = "Number of replicates (bootstrap over sub-samples):",
               value = 5000, min = 100, max = 99999, step = 1000)),
-          column(4,
+          column(3,
             numericInput(ns("alpha"),
               label = "Confidence interval — alpha:",
-              value = 0.05, min = 0.0001, max = 0.5, step = 0.01))
+              value = 0.05, min = 0.0001, max = 0.5, step = 0.01)),
+          column(3,
+            numericInput(ns("boot_seed"),
+              label = "Random seed (reproducibility):",
+              value = 12345, min = 1, max = 999999, step = 1))
         ),
+        tags$p(style="color:#777;font-size:11px;",
+          "Same seed + same settings = identical bootstrap results every run. The confidence ",
+          "interval in File 2 and the full replicate distribution in File 5 always come from the ",
+          "same bootstrap run, so they match exactly \u2014 if you compare them across two different runs ",
+          "(different seed, or seed changed), small differences are expected since the bootstrap draw itself differs."),
 
         tags$hr(style="margin:1rem 0;"),
 
@@ -229,17 +236,17 @@ null_alleles_UI <- function(id) {
             tags$div(style="display:flex; align-items:flex-end; gap:8px;",
               tags$div(style="flex:1;",
                 textInput(ns("out_dir_display"), "Please choose a folder for output files:",
-                          value = "", placeholder = "(no folder chosen \u2014 files download to your browser instead)")),
-              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
-                                          class = "btn-action-secondary", style="margin-bottom:15px;"))),
+                          value = "", placeholder = "(paste/type a folder path, or use Browse if available)")),
+              uiOutput(ns("ui_dir_browse_btn"), inline = TRUE))),
           column(6,
-            textInput(ns("out_root"), "Please choose a root for the name of output files:",
-                      value = "", placeholder = "e.g. BoophilusAdultsDataCattle"))
+            textInput(ns("out_root"), "Root for the name of output files (from your data file — edit/extend freely):",
+                      value = "", placeholder = "auto-filled once your data is loaded"))
         ),
         tags$p(style="color:#777;font-size:11px;",
           "File names = root + description (e.g. ", tags$code("<root>null_allele_frequencies.txt"),
-          "). No date is added (already shown by the file explorer) \u2014 if you re-run with a ",
-          "different missing-data coding and want to keep both results, add your own suffix below."),
+          "). The root is pre-filled from your data file's name and is fully yours to edit — ",
+          "add anything you like (e.g. which loci were recoded 999). No date is added to file names ",
+          "(already shown by the file explorer) \u2014 use the optional suffix below to tell two runs apart."),
         textInput(ns("out_suffix"), "Optional suffix to distinguish this run (e.g. \"1\"):", value = ""),
         tags$p(style="color:#777;font-size:11px;",
           "Files are saved as tab-delimited ", tags$strong(".txt"), " (not .csv)."),
@@ -253,7 +260,7 @@ null_alleles_UI <- function(id) {
         fluidRow(
           column(4,
             actionButton(ns("run_all"),
-              label = tagList(icon("play"), tags$strong("  Compute + Bootstrap + Export")),
+              label = tagList(tags$strong("  Compute + Bootstrap + Export")),
               class = "na-btn-run btn",
               width = "100%"))
         ),
@@ -267,8 +274,7 @@ null_alleles_UI <- function(id) {
     # ════════════════════════════════════════════════════════════════════════
     tags$div(class="na-panel",
       tags$div(class="na-panel-head",
-        tags$div(class="na-panel-title",
-          icon("file-download"), " Output files")),
+        tags$div(class="na-panel-title", " Output files")),
       tags$div(class="na-panel-body",
         fluidRow(
           # File 1
@@ -276,7 +282,7 @@ null_alleles_UI <- function(id) {
             tags$div(class="na-panel", style="border-color:#bfdbfe;",
               tags$div(class="na-panel-head", style="background:#eff6ff;",
                 tags$div(class="na-panel-title", style="color:#1d4ed8;font-size:11px;",
-                  icon("file-alt"), " ", uiOutput(ns("ui_filename_1"), inline=TRUE))),
+                  uiOutput(ns("ui_filename_1"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "p_nulls per locus \u00d7 subsample",
                 tags$br(), "Global weighted mean per locus",
@@ -290,7 +296,7 @@ null_alleles_UI <- function(id) {
             tags$div(class="na-panel", style="border-color:#99f6e4;",
               tags$div(class="na-panel-head", style="background:#f0fdfa;",
                 tags$div(class="na-panel-title", style="color:#0d9488;font-size:11px;",
-                  icon("chart-bar"), " ", uiOutput(ns("ui_filename_2"), inline=TRUE))),
+                  uiOutput(ns("ui_filename_2"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "Per locus + multilocus FST / FST-ENA",
                 tags$br(), "CI over loci and over sub-samples",
@@ -303,7 +309,7 @@ null_alleles_UI <- function(id) {
             tags$div(class="na-panel", style="border-color:#e9d5ff;",
               tags$div(class="na-panel-head", style="background:#faf5ff;",
                 tags$div(class="na-panel-title", style="color:#7c3aed;font-size:11px;",
-                  icon("table"), " ", uiOutput(ns("ui_filename_3"), inline=TRUE))),
+                  uiOutput(ns("ui_filename_3"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "FST, FST-ENA, DCSE, DCSE-INA",
                 tags$br(), "Per pair of sub-samples, all loci combined",
@@ -316,7 +322,7 @@ null_alleles_UI <- function(id) {
             tags$div(class="na-panel", style="border-color:#fcd34d;",
               tags$div(class="na-panel-head", style="background:#fffbeb;",
                 tags$div(class="na-panel-title", style="color:#92400e;font-size:11px;",
-                  icon("th"), " ", uiOutput(ns("ui_filename_4"), inline=TRUE))),
+                  uiOutput(ns("ui_filename_4"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "FST, FST-ENA, DCSE, DCSE-INA",
                 tags$br(), "Half-matrix per locus, per pair",
@@ -329,12 +335,12 @@ null_alleles_UI <- function(id) {
             tags$div(class="na-panel", style="border-color:#fca5a5;",
               tags$div(class="na-panel-head", style="background:#fef2f2;",
                 tags$div(class="na-panel-title", style="color:#991b1b;font-size:11px;",
-                  icon("chart-area"), " ", uiOutput(ns("ui_filename_5"), inline=TRUE))),
+                  uiOutput(ns("ui_filename_5"), inline=TRUE))),
               tags$div(class="na-panel-body", style="font-size:11px;color:#334155;",
                 "All bootstrap replicate values (over loci and over sub-samples)",
                 tags$br(),
-                uiOutput(ns("ui_dl_file5")),
-                plotly::plotlyOutput(ns("boot_dist_plot"), height="220px")
+                uiOutput(ns("ui_dl_file5"))
+                # plotly::plotlyOutput(ns("boot_dist_plot"), height="220px")
               )
             )
           )
@@ -348,10 +354,9 @@ null_alleles_UI <- function(id) {
     tabsetPanel(id = ns("na_tabs"), type = "tabs",
 
       # ── TAB 1: Null allele frequencies ────────────────────────────────── #
-      tabPanel(title = tagList(icon("dna"), " Null allele frequencies"),
+      tabPanel(title = tagList(" Null allele frequencies"),
                value = "tab_na", br(),
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           "Reproduces FreeNA's own null-allele-frequency report: the EM algorithm ",
           "(Dempster, Laird & Rubin 1977) estimated per locus \u00d7 population below, ",
           "and the N-weighted per-locus summary (Av(p_nulls), Av(N_exp_blanks), ",
@@ -360,25 +365,24 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " p_nulls per locus \u00d7 population (EM algorithm)")),
+              " p_nulls per locus \u00d7 population (EM algorithm)")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_t1")))),
         tags$br(),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("globe"), " Per-locus summary (N-weighted mean, FreeNA report format)")),
+              " Per-locus summary (N-weighted mean, FreeNA report format)")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_t2"))))
       ),
 
       # ── TAB 2: FST & FST-ENA ──────────────────────────────────────────── #
-      tabPanel(title = tagList(icon("chart-bar"), " FST / FST-ENA"),
+      tabPanel(title = tagList(" FST / FST-ENA"),
                value = "tab_fst", br(),
 
         tags$div(class="na-info",
-          icon("info-circle"), " ",
-          tags$strong("Global multilocus FST"), " \u2014 Weir (1996) / Genepop method. ",
+          tags$strong("Global multilocus FST"), " \u2014 Weir & Cockerham (1984). ",
           tags$strong("FST-ENA"), ": EM-corrected frequencies, Excluding Null Alleles \u2014 Chapuis & Estoup (2007).",
           tags$br(),
           "Bootstrap CI over loci (resample loci with replacement) and over sub-samples ",
@@ -388,7 +392,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " Per-locus FST and FST-ENA")),
+              " Per-locus FST and FST-ENA")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_fst_global")))),
         br(),
@@ -396,7 +400,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("random"), " Bootstrap CI \u2014 Global FST and FST-ENA")),
+              " Bootstrap CI \u2014 Global FST and FST-ENA")),
           tags$div(class="na-panel-body",
             uiOutput(ns("ui_boot_global_fst")))),
         br(),
@@ -404,7 +408,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("exchange-alt"), " Pairwise FST and FST-ENA \u2014 lower triangle matrix")),
+              " Pairwise FST and FST-ENA \u2014 lower triangle matrix")),
           tags$div(class="na-panel-body",
             fluidRow(
               column(5,
@@ -420,17 +424,16 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("random"), " Bootstrap CI \u2014 Pairwise FST-ENA (over loci)")),
+              " Bootstrap CI \u2014 Pairwise FST-ENA (over loci)")),
           tags$div(class="na-panel-body",
             uiOutput(ns("ui_boot_pair_fst"))))
       ),
 
       # ── TAB 3: DCSE / DCSE-INA ────────────────────────────────────────── #
-      tabPanel(title = tagList(icon("ruler-combined"), " DCSE / DCSE-INA"),
+      tabPanel(title = tagList(" DCSE / DCSE-INA"),
                value = "tab_dc", br(),
 
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           tags$strong("Cavalli-Sforza & Edwards (1967) chord distance."),
           " DCSE-INA includes the null allele as an extra state \u2014 Chapuis & Estoup (2007).",
           tags$br(),
@@ -441,7 +444,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("th"), " Pairwise DCSE and DCSE-INA \u2014 lower triangle matrix")),
+              " Pairwise DCSE and DCSE-INA \u2014 lower triangle matrix")),
           tags$div(class="na-panel-body",
             fluidRow(
               column(5,
@@ -457,17 +460,16 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("random"), " Bootstrap CI \u2014 Pairwise DCSE-INA (over loci)")),
+              " Bootstrap CI \u2014 Pairwise DCSE-INA (over loci)")),
           tags$div(class="na-panel-body",
             uiOutput(ns("ui_boot_pair_dc"))))
       ),
 
       # ── TAB 4: Per-locus x pair ───────────────────────────────────────── #
-      tabPanel(title = tagList(icon("table"), " Per-locus \u00d7 pair"),
+      tabPanel(title = tagList(" Per-locus \u00d7 pair"),
                value = "tab_locus_pair", br(),
 
         tags$div(class="na-info",
-          icon("info-circle"), " ",
           "FST, FST-ENA, DCSE and DCSE-INA for each locus \u00d7 pair of populations.",
           " Useful for detecting outlier loci."
         ),
@@ -484,7 +486,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " FST and FST-ENA per locus \u00d7 pair")),
+              " FST and FST-ENA per locus \u00d7 pair")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_fst_locus")))),
         br(),
@@ -492,7 +494,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("list"), " DCSE and DCSE-INA per locus \u00d7 pair")),
+              " DCSE and DCSE-INA per locus \u00d7 pair")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_dc_locus"))))
       )

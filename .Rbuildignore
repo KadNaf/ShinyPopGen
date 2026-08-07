@@ -1,10 +1,8 @@
-^app\.R$
 ^renv$
 ^renv\.lock$
 ^\.Rprofile$
 ^dev$
 ^\.Rproj\.user$
-^shinypopgen\.Rproj$
 ^README\.md$
 ^LICENSE\.md$
 ^\.github$

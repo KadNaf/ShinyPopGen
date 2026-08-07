@@ -16,7 +16,7 @@
 # References:
 #   Dempster, Laird & Rubin (1977)  — EM algorithm
 #   Chapuis & Estoup (2007)         — FreeNA: ENA and INA corrections
-#   Weir (1996)                     — FST following Genepop method
+#   Weir & Cockerham (1984)          — FST estimator
 #   Cavalli-Sforza & Edwards (1967) — Chord genetic distance (DCSE)
 
 server_null_alleles <- function(id, rv) {
@@ -348,7 +348,7 @@ server_null_alleles <- function(id, rv) {
            alleles=alleles, n_valid_geno=n_valid_geno, treat=treat)
     }
 
-    # ── Weir (1996) FST components ─────────────────────────────────────────────
+    # ── Weir & Cockerham (1984) FST components ─────────────────────────────────────────────
     weir_components_allele <- function(pop_list, use_corr = FALSE) {
       r     <- length(pop_list)
       N_tot <- sum(sapply(pop_list, `[[`, "ni"))
@@ -800,6 +800,13 @@ server_null_alleles <- function(id, rv) {
       pops    <- names(em_res[[markers[1]]])
       n_pop   <- length(pops)
       boot_raw <- boot_ena <- numeric(nboot)
+      # Per-locus accumulators (nboot x n_markers) — reuses the per-locus FST
+      # that compute_fst_global_full() already computes for every replicate,
+      # so per-locus CI comes essentially for free alongside the global one.
+      loc_raw <- matrix(NA_real_, nrow = nboot, ncol = length(markers),
+                         dimnames = list(NULL, markers))
+      loc_ena <- matrix(NA_real_, nrow = nboot, ncol = length(markers),
+                         dimnames = list(NULL, markers))
       report_every <- max(1L, as.integer(round(nboot / 20)))  # ~20 progress updates
       for (b in seq_len(nboot)) {
         samp_pops <- sample(pops, n_pop, replace = TRUE)
@@ -813,14 +820,29 @@ server_null_alleles <- function(id, rv) {
         fg <- compute_fst_global_full(em_b)
         boot_raw[b] <- fg$global_raw %||% NA_real_
         boot_ena[b] <- fg$global_ena %||% NA_real_
+        pl <- fg$per_locus
+        if (!is.null(pl) && nrow(pl) > 0L) {
+          mtch <- match(pl$Locus, markers)
+          loc_raw[b, mtch] <- pl$FST_raw
+          loc_ena[b, mtch] <- pl$FST_ENA
+        }
         if (!is.null(progress_cb) && (b %% report_every == 0L || b == nboot))
           progress_cb(b / nboot)
       }
+      per_locus_ci <- do.call(rbind, lapply(markers, function(loc) {
+        qr <- quantile(loc_raw[, loc], c(alpha/2, 1-alpha/2), na.rm=TRUE)
+        qe <- quantile(loc_ena[, loc], c(alpha/2, 1-alpha/2), na.rm=TRUE)
+        data.frame(Locus = loc,
+                   CI_lo_raw_subs = round(qr[1], 6), CI_hi_raw_subs = round(qr[2], 6),
+                   CI_lo_ENA_subs = round(qe[1], 6), CI_hi_ENA_subs = round(qe[2], 6),
+                   stringsAsFactors = FALSE)
+      }))
       list(
         raw = quantile(boot_raw, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
         ena = quantile(boot_ena, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
         boot_raw_vec = boot_raw,
-        boot_ena_vec = boot_ena
+        boot_ena_vec = boot_ena,
+        per_locus_ci = per_locus_ci
       )
     }
 
@@ -837,6 +859,15 @@ server_null_alleles <- function(id, rv) {
       base    <- as.integer(base_r())
       markers <- markers_r(); pops <- pops_r()
       treats  <- locus_treatments_r()   # user's per-locus coding choice
+
+      # Fixed random seed: guarantees the bootstrap CI reported in File 2 and
+      # the full replicate distribution in File 5 ALWAYS match exactly (they
+      # already come from the same single run — this also makes re-running
+      # with the same settings fully reproducible from one session to the
+      # next, instead of drawing a new random bootstrap sample every time).
+      boot_seed <- suppressWarnings(as.integer(input$boot_seed %||% 12345L))
+      if (!is.finite(boot_seed)) boot_seed <- 12345L
+      set.seed(boot_seed)
 
       withProgress(message = "Running computations...", value = 0, {
 
@@ -985,7 +1016,7 @@ server_null_alleles <- function(id, rv) {
           boot_gl_subs      = boot_gl_subs,
           boot_pair_fst     = boot_pair_fst_loci,
           boot_pair_dc      = boot_pair_dc_loci,
-          nboot = nboot, nboot_subs = nboot_subs, alpha = alpha, ci = ci,
+          nboot = nboot, nboot_subs = nboot_subs, boot_seed = boot_seed, alpha = alpha, ci = ci,
           treats = treats, markers = markers, pops = pops,
           em_res = em_res
         )
@@ -993,13 +1024,31 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  OUTPUT FILE NAMING — root (from data file, user-editable) + optional
-    #  suffix (to tell two runs apart) + description. No date (already shown
-    #  by the file explorer).
+    #  OUTPUT FILE NAMING — root auto-suggested from the uploaded data file's
+    #  name (user can still edit/extend it, e.g. to note which loci were
+    #  recoded 999) + optional suffix (to tell two runs apart) + description.
+    #  No date (already shown by the file explorer).
     # ══════════════════════════════════════════════════════════════════════════
+    data_root_r <- reactive({
+      fn <- rv$dataset_filename %||% ""
+      if (!nzchar(fn)) return("")
+      sub("\\.[^.]*$", "", fn)  # strip extension
+    })
+
+    # Suggest the root exactly once, as soon as the data file is known —
+    # never overwrite what the user has typed afterwards.
+    out_root_suggested <- reactiveVal(FALSE)
+    observeEvent(data_root_r(), {
+      dr <- data_root_r()
+      if (nzchar(dr) && !isTRUE(out_root_suggested())) {
+        updateTextInput(session, "out_root", value = dr)
+        out_root_suggested(TRUE)
+      }
+    }, ignoreInit = TRUE)
+
     out_root_r <- reactive({
       r <- trimws(input$out_root %||% "")
-      if (nzchar(r)) r else "SPG_"
+      if (nzchar(r)) r else (if (nzchar(data_root_r())) data_root_r() else "SPG_")
     })
     out_suffix_r <- reactive({ trimws(input$out_suffix %||% "") })
 
@@ -1023,11 +1072,13 @@ server_null_alleles <- function(id, rv) {
         "Method: Expectation-Maximization (EM) algorithm - Dempster, Laird & Rubin (1977)",
         if (fst_dcse) "ENA correction (Excluding Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
         if (fst_dcse) "INA correction (Including Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
-        if (fst_dcse) "FST: Weir (1996) following Genepop method",
+        if (fst_dcse) "FST: Weir & Cockerham (1984) estimator",
         if (fst_dcse) "DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
         if (fst_dcse) paste0("Bootstrap replicates (over loci): ", r$nboot),
         if (fst_dcse) paste0("Bootstrap replicates (over sub-samples): ", r$nboot_subs %||% r$nboot),
         paste0("Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
+        if (fst_dcse) paste0("Bootstrap random seed: ", r$boot_seed %||% "NA",
+               " (same seed + same settings = identical bootstrap results every run)"),
         "Locus coding for missing data (Miss) (000000=ignored; 999999=null homozygote):",
         paste0("  ", treat_summary),
         ""
@@ -1099,11 +1150,19 @@ server_null_alleles <- function(id, rv) {
         stringsAsFactors = FALSE
       )
 
-      # Add empty CI columns to per_locus (CI only available for global)
+      # Per-locus CI: "over loci" bootstrap doesn't apply to a single locus
+      # (nothing to resample) — stays NA. "Over sub-samples" (populations
+      # resampled as blocks) DOES apply per locus, and is filled in below.
       pl$CI_lo_raw_loci <- NA_real_; pl$CI_hi_raw_loci <- NA_real_
       pl$CI_lo_ENA_loci <- NA_real_; pl$CI_hi_ENA_loci <- NA_real_
-      pl$CI_lo_raw_subs <- NA_real_; pl$CI_hi_raw_subs <- NA_real_
-      pl$CI_lo_ENA_subs <- NA_real_; pl$CI_hi_ENA_subs <- NA_real_
+      plc <- r$boot_gl_subs$per_locus_ci
+      if (!is.null(plc) && nrow(plc) > 0L) {
+        pl <- merge(pl, plc, by = "Locus", all.x = TRUE, sort = FALSE)
+        pl <- pl[match(r$markers, pl$Locus), ]  # restore original locus order
+      } else {
+        pl$CI_lo_raw_subs <- NA_real_; pl$CI_hi_raw_subs <- NA_real_
+        pl$CI_lo_ENA_subs <- NA_real_; pl$CI_hi_ENA_subs <- NA_real_
+      }
 
       out <- rbind(glob[, names(pl)], pl)
       list(header = meta_header(r, "Global FST and FST-ENA with bootstrap CIs"),
@@ -1127,16 +1186,29 @@ server_null_alleles <- function(id, rv) {
       bd    <- r$boot_pair_dc
 
       merged <- merge(fst_l, dc_l, by=c("Pop1","Pop2"), all=TRUE)
-      if (!is.null(bf) && nrow(bf)>0)
-        merged <- merge(merged, bf[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci",
-                                      "CI_lo_raw","CI_hi_raw")],
-                        by=c("Pop1","Pop2"), all.x=TRUE,
-                        suffixes=c("","_FST_loci"))
-      if (!is.null(bd) && nrow(bd)>0)
-        merged <- merge(merged, bd[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci",
-                                      "CI_lo_raw","CI_hi_raw")],
-                        by=c("Pop1","Pop2"), all.x=TRUE,
-                        suffixes=c("_FST","_DCSE"))
+
+      # Explicit, unambiguous CI column names — never rely on merge()'s
+      # automatic suffixing here: an earlier version used suffixes="_FST"/
+      # "_DCSE", which only marked *which statistic family* a CI column
+      # belonged to, not whether it was the raw or the ENA/INA-corrected
+      # bound — "CI_lo_loci_FST" and "CI_lo_raw_FST" both got the same
+      # "_FST" tag despite one being the FST-ENA bound and the other the
+      # raw-FST bound. Renamed explicitly below so raw vs ENA/INA is always
+      # in the column name itself.
+      if (!is.null(bf) && nrow(bf)>0) {
+        bf2 <- bf[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci","CI_lo_raw","CI_hi_raw")]
+        names(bf2) <- c("Pop1","Pop2",
+                         "CI_lo_FST_ENA_loci","CI_hi_FST_ENA_loci",
+                         "CI_lo_FST_raw_loci", "CI_hi_FST_raw_loci")
+        merged <- merge(merged, bf2, by=c("Pop1","Pop2"), all.x=TRUE)
+      }
+      if (!is.null(bd) && nrow(bd)>0) {
+        bd2 <- bd[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci","CI_lo_raw","CI_hi_raw")]
+        names(bd2) <- c("Pop1","Pop2",
+                         "CI_lo_DCSE_INA_loci","CI_hi_DCSE_INA_loci",
+                         "CI_lo_DCSE_raw_loci", "CI_hi_DCSE_raw_loci")
+        merged <- merge(merged, bd2, by=c("Pop1","Pop2"), all.x=TRUE)
+      }
       list(header = meta_header(r, "Pairwise statistics (all loci combined), long format"),
            data   = merged)
     })
@@ -1245,11 +1317,39 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ── Save all files automatically to the chosen output folder ──────────────
-    volumes_r <- c(Home = path.expand("~"), "R installation" = R.home(),
-                    shinyFiles::getVolumes()())
-    shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
+    # shinyFiles is OPTIONAL: if it isn't installed, the "Browse" button is
+    # simply not shown and the module keeps working — the user can still
+    # type/paste a folder path directly into the text box above (that path
+    # is all that's actually needed to auto-save the files).
+    shinyfiles_ok <- requireNamespace("shinyFiles", quietly = TRUE)
+
+    volumes_r <- if (shinyfiles_ok) {
+      tryCatch(
+        c(Home = path.expand("~"), "R installation" = R.home(), shinyFiles::getVolumes()()),
+        error = function(e) NULL)
+    } else NULL
+
+    if (shinyfiles_ok && !is.null(volumes_r)) {
+      tryCatch(
+        shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session),
+        error = function(e) { shinyfiles_ok <<- FALSE }
+      )
+    } else {
+      shinyfiles_ok <- FALSE
+    }
+
+    output$ui_dir_browse_btn <- renderUI({
+      if (isTRUE(shinyfiles_ok)) {
+        shinyFiles::shinyDirButton(session$ns("out_dir_browse"), "Browse", "Choose output folder",
+                                    class = "btn-action-secondary", style = "margin-bottom:15px;")
+      } else {
+        tags$span(style = "color:#94a3b8;font-size:11px;margin-bottom:15px;display:inline-block;",
+                  "(Browse unavailable \u2014 type/paste the folder path directly)")
+      }
+    })
 
     out_dir_r <- reactive({
+      if (!isTRUE(shinyfiles_ok)) return(NULL)
       sel <- input$out_dir_browse
       if (is.null(sel) || identical(sel, 0)) return(NULL)
       tryCatch(shinyFiles::parseDirPath(volumes_r, sel), error = function(e) NULL)
@@ -1259,7 +1359,7 @@ server_null_alleles <- function(id, rv) {
       d <- out_dir_r()
       if (!is.null(d) && length(d) && nzchar(d))
         updateTextInput(session, "out_dir_display", value = d)
-    })
+    }, ignoreInit = TRUE, ignoreNULL = TRUE)
 
     observeEvent(results_r(), {
       dir <- trimws(input$out_dir_display %||% "")
