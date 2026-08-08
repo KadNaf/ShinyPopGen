@@ -1413,44 +1413,52 @@ server_null_alleles <- function(id, rv) {
       )
     })
 
-    # ── Value boxes ────────────────────────────────────────────────────────────
-    output$vb_loci <- renderUI({
-      tryCatch(tags$span(length(markers_r())), error=function(e) tags$span("\u2014"))
+    # ── Value boxes ──────────────────────────────────────────────────────────
+    # (shinydashboard valueBox, same component/icons/colors as everywhere else
+    #  in the app — the Isolation by Distance module reuses these very numbers
+    #  with the same icon/color choices for "Loci", "Populations" and
+    #  "Global FST-ENA", see server_isolation_by_distance.R)
+    output$vb_loci <- renderValueBox({
+      n <- tryCatch(length(markers_r()), error = function(e) NA_integer_)
+      valueBox(if (is.na(n)) "\u2014" else n, "Loci", icon = icon("dna"), color = "navy")
     })
-    output$vb_pops <- renderUI({
-      tryCatch(tags$span(length(pops_r())), error=function(e) tags$span("\u2014"))
+    output$vb_pops <- renderValueBox({
+      n <- tryCatch(length(pops_r()), error = function(e) NA_integer_)
+      valueBox(if (is.na(n)) "\u2014" else n, "Populations", icon = icon("users"), color = "teal")
     })
-    output$vb_n <- renderUI({
-      tryCatch({
+    output$vb_n <- renderValueBox({
+      n <- tryCatch({
         db_ready(); con <- con_r(); ms <- meta_schema_r()
-        n <- DBI::dbGetQuery(con, sprintf(
+        DBI::dbGetQuery(con, sprintf(
           "SELECT COUNT(DISTINCT CAST(%s AS VARCHAR)) AS n FROM %s WHERE %s IS NOT NULL",
           sql_id(con,ms$ind_col),sql_id(con,tbl_meta_r()),sql_id(con,ms$ind_col)))$n[[1]]
-        tags$span(n)
-      }, error=function(e) tags$span("\u2014"))
+      }, error = function(e) NA_integer_)
+      valueBox(if (is.na(n)) "\u2014" else n, "Individuals", icon = icon("user"), color = "purple")
     })
-    output$vb_avg_null <- renderUI({
-      tryCatch({
+    output$vb_avg_null <- renderValueBox({
+      v <- tryCatch({
         r <- results_r()
-        v <- round(mean(r$t1$p_nulls, na.rm=TRUE), 4)
-        col <- if(v>.20)"#9d174d" else if(v>.10)"#854d0e" else "#166534"
-        tags$span(style=paste0("color:",col,";"), v)
-      }, error=function(e) tags$span("\u2014"))
+        round(mean(r$t1$p_nulls, na.rm = TRUE), 4)
+      }, error = function(e) NA_real_)
+      col <- if (is.na(v)) "navy" else if (v > .20) "red" else if (v > .10) "yellow" else "green"
+      valueBox(if (is.na(v)) "\u2014" else v, "Avg p_nulls", icon = icon("percent"), color = col)
     })
-    output$vb_max_null <- renderUI({
-      tryCatch({
+    output$vb_max_null <- renderValueBox({
+      v <- tryCatch({
         r <- results_r()
-        v <- round(max(r$t1$p_nulls, na.rm=TRUE), 4)
-        col <- if(v>.30)"#9d174d" else if(v>.15)"#854d0e" else "#166534"
-        tags$span(style=paste0("color:",col,";"), v)
-      }, error=function(e) tags$span("\u2014"))
+        round(max(r$t1$p_nulls, na.rm = TRUE), 4)
+      }, error = function(e) NA_real_)
+      col <- if (is.na(v)) "navy" else if (v > .30) "red" else if (v > .15) "yellow" else "green"
+      valueBox(if (is.na(v)) "\u2014" else v, "Max p_nulls", icon = icon("arrow-up"), color = col)
     })
-    output$vb_fst_ena <- renderUI({
-      tryCatch({
-        r <- results_r(); v <- round(r$fst_global$global_ena, 4)
-        col <- if(!is.na(v)&&v>.15)"#9d174d" else if(!is.na(v)&&v>.05)"#854d0e" else "#166534"
-        tags$span(style=paste0("color:",col,";"), if(is.na(v))"\u2014" else v)
-      }, error=function(e) tags$span("\u2014"))
+    output$vb_fst_ena <- renderValueBox({
+      v <- tryCatch({
+        r <- results_r()
+        round(r$fst_global$global_ena, 4)
+      }, error = function(e) NA_real_)
+      col <- if (is.na(v)) "navy" else if (v > .15) "red" else if (v > .05) "yellow" else "green"
+      valueBox(if (is.na(v)) "\u2014" else v, HTML("Global F<sub>ST</sub>-ENA"),
+               icon = icon("chart-bar"), color = col)
     })
 
     # ── Tab 1: null allele frequencies DTs ────────────────────────────────────
