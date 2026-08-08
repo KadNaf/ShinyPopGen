@@ -3,7 +3,6 @@
 ^\.Rprofile$
 ^dev$
 ^\.Rproj\.user$
-^shinypopgen\.Rproj$
 ^README\.md$
 ^LICENSE\.md$
 ^\.github$
@@ -11,3 +10,4 @@
 ^Dockerfile$
 ^\.dockerignore$
 ^\.gitignore$
+^doc$

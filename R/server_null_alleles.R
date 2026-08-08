@@ -16,7 +16,7 @@
 # References:
 #   Dempster, Laird & Rubin (1977)  — EM algorithm
 #   Chapuis & Estoup (2007)         — FreeNA: ENA and INA corrections
-#   Weir (1996)                     — FST following Genepop method
+#   Weir & Cockerham (1984)          — FST estimator
 #   Cavalli-Sforza & Edwards (1967) — Chord genetic distance (DCSE)
 
 server_null_alleles <- function(id, rv) {
@@ -158,7 +158,6 @@ server_null_alleles <- function(id, rv) {
     #  locus.
     # ══════════════════════════════════════════════════════════════════════════
     treat_id  <- function(loc) paste0("coding_", gsub("[^A-Za-z0-9]", "_", loc))
-    recode_id <- function(loc) paste0("recode_", gsub("[^A-Za-z0-9]", "_", loc))
 
     # Suggestion only — derived from the data itself (does any population at
     # this locus actually contain a literal 999999/999999-style genotype?).
@@ -187,26 +186,15 @@ server_null_alleles <- function(id, rv) {
       stats::setNames(treats, markers)
     })
 
-    # Single-digit code reported in the "Recoded_blanks" column (999 or 0),
-    # mirroring FreeNA's own report — follows the user's chosen coding.
+    # Single-digit code reported in the "Miss" column (999 or 0), mirroring
+    # FreeNA's own report — follows the user's chosen coding.
     locus_recoded_blanks_r <- reactive({
       base      <- as.integer(base_r())
-      null_code <- if (base >= 1000L) 999L else 99L
+      null_code <- 999L  # per supervisor: only 999/999999 supported, never 99
       treats    <- locus_treatments_r()
       stats::setNames(
         ifelse(treats == "null_homo", null_code, 0L),
         names(treats))
-    })
-
-    # Optional, user-set flag per locus — lets the user mark a locus for a
-    # recoding sensitivity check (exported as "Recode" = 0 when flagged,
-    # blank otherwise). Purely an annotation; it does not change the EM
-    # computation itself.
-    locus_recode_flags_r <- reactive({
-      markers <- markers_r()
-      stats::setNames(
-        sapply(markers, function(loc) isTRUE(input[[recode_id(loc)]])),
-        markers)
     })
 
     # ── Per-locus coding UI — radio buttons, pre-selected from auto-detection ──
@@ -218,26 +206,15 @@ server_null_alleles <- function(id, rv) {
       items <- lapply(markers, function(loc) {
         sugg <- if (!is.null(suggested) && loc %in% names(suggested))
           suggested[[loc]] else "absent"
-        hint_txt <- sprintf("Suggestion based on your data: %s",
-          if (identical(sugg, "null_homo")) "999999 (null homozygote)"
-          else "000000 (absent / PCR failure)")
         tags$div(class = "na-locus-item",
           tags$div(class = "na-locus-name", loc),
-          tags$div(style = "font-size:10.5px;color:#64748b;margin-bottom:3px;", hint_txt),
           radioButtons(
             inputId  = ns_fn(treat_id(loc)),
             label    = NULL,
-            choices  = c(
-              "000000 — absent / PCR failure" = "absent",
-              "999999 — null homozygote"      = "null_homo"
-            ),
+            choices  = c("0" = "absent", "999999" = "null_homo"),
             selected = sugg,
             inline   = TRUE
-          ),
-          checkboxInput(
-            inputId = ns_fn(recode_id(loc)),
-            label   = "Flag for recoding sensitivity check",
-            value   = FALSE)
+          )
         )
       })
       tags$div(class = "na-locus-grid", items)
@@ -245,56 +222,74 @@ server_null_alleles <- function(id, rv) {
 
     # ══════════════════════════════════════════════════════════════════════════
     #  EM ALGORITHM — exact translation of rDempster_per_locus (Pascal FreeNA)
-    #  n_null_homo (how many individuals carry a literal 99/999-per-allele
-    #  genotype) is ALWAYS computed straight from the data, exactly like
-    #  FreeNA_optm2R.pas does when reading genotypes — this never depends on
-    #  any setting and is always correct.
-    #  `treat` is the USER'S CHOICE (per locus, from the radio buttons) for
-    #  which EM formula to apply to that locus's blanks:
+    #
+    #  `treat` is the USER'S CHOICE (per locus, from the radio buttons):
     #    "absent"    — treat blanks as uninformative PCR failure (000000)
     #    "null_homo" — treat blanks as informative null homozygotes (999999)
-    #  If the user picks "null_homo" for a locus that has no literal
-    #  null-homozygote genotypes in the data (n_null_homo == 0), we fall back
-    #  to the "absent" formulas — there is nothing to treat as informative.
+    #
+    #  CRITICAL: this choice is honoured as a TEMPORARY RE-CODING, independent
+    #  of whatever numeral the source file actually used for its blanks. A
+    #  "blank" individual (coded 0 OR 999 in the raw data — either
+    #  convention) is identified first; the user's choice then decides
+    #  whether ALL of that locus's blanks enter the EM as absent or as null
+    #  homozygotes. Earlier versions only recognised a blank as
+    #  "null homozygote" if it was LITERALLY coded 999 in the source file —
+    #  so choosing "null_homo" for a locus whose blanks were coded 0 silently
+    #  had no effect at all (it always fell back to "absent", because
+    #  n_null_homo was 0 by construction). That is the bug fixed here: the
+    #  user's selection now always governs the computation, whether the
+    #  source file used 0, 000000, 999, or 999999.
     # ══════════════════════════════════════════════════════════════════════════
     em_freena <- function(gt_vec, base, treat = "absent", max_iter = 5000L) {
-      efpop      <- length(gt_vec)
-      absent_msk <- is.na(gt_vec) | gt_vec <= 0L
-      n_absent   <- sum(absent_msk)
-      valid_gt   <- gt_vec[!absent_msk]
+      efpop     <- length(gt_vec)
+      null_code <- 999L  # per supervisor: only 999/999999 supported, never 99
+
+      # A "blank" is any individual missing at this locus, REGARDLESS of
+      # which numeral the source file used to encode it (0 or 999).
+      is_zero_coded <- is.na(gt_vec) | gt_vec <= 0L
+      a1_tmp <- ifelse(gt_vec > 0L, floor(gt_vec / base), NA_integer_)
+      a2_tmp <- ifelse(gt_vec > 0L, gt_vec %% base,       NA_integer_)
+      is_null_coded <- !is_zero_coded & !is.na(a1_tmp) &
+                        (a1_tmp == null_code) & (a2_tmp == null_code)
+      is_blank <- is_zero_coded | is_null_coded
+
+      # TEMPORARY RE-CODING — driven entirely by the user's choice, not by
+      # the source numeral. Exception: if THIS population has no blanks at
+      # all for this locus, there is nothing to recode as null-homozygote —
+      # fall back to the absent-style formulas (nothing informative to use).
+      treat <- if (identical(treat, "null_homo")) "null_homo" else "absent"
+      if (treat == "null_homo" && sum(is_blank) > 0L) {
+        n_absent    <- 0L
+        n_null_homo <- sum(is_blank)
+      } else {
+        treat       <- "absent"
+        n_absent    <- sum(is_blank)
+        n_null_homo <- 0L
+      }
+
+      valid_gt <- gt_vec[!is_blank]   # real (non-blank) genotypes only
 
       empty <- list(rd=0.0, pfreq=numeric(0), genefreq_obs=numeric(0),
                     H_ii=numeric(0), H_iX=numeric(0), N=0L, efpop=efpop,
-                    n_absent=n_absent, n_null_homo=0L, alleles=integer(0),
-                    n_valid_geno=0L, treat="absent")
+                    n_absent=n_absent, n_null_homo=n_null_homo, alleles=integer(0),
+                    n_valid_geno=0L, treat=treat)
 
       if (length(valid_gt) == 0L) return(empty)
 
-      a1_all <- floor(valid_gt / base)
-      a2_all <- valid_gt %% base
-      null_code     <- if (base >= 1000L) 999L else 99L
-      null_homo_msk <- (a1_all == null_code) & (a2_all == null_code)
-      n_null_homo   <- sum(null_homo_msk)
-
-      # Effective treat actually applied: honour the user's choice, but only
-      # if there is something to treat as informative.
-      treat <- if (identical(treat, "null_homo") && n_null_homo > 0L)
-        "null_homo" else "absent"
-
-      valid_a1 <- a1_all[!null_homo_msk]
-      valid_a2 <- a2_all[!null_homo_msk]
+      valid_a1 <- floor(valid_gt / base)
+      valid_a2 <- valid_gt %% base
       alleles  <- sort(unique(c(valid_a1, valid_a2)))
       alleles  <- alleles[alleles >= 0L & alleles != null_code]
 
       N <- efpop - n_absent
       if (N == 0L || length(alleles) == 0L) {
-        empty$N <- N; empty$n_null_homo <- n_null_homo; empty$treat <- treat
+        empty$N <- N
         return(empty)
       }
 
       n_valid_geno <- N - n_null_homo
       if (n_valid_geno == 0L) {
-        empty$N <- N; empty$n_null_homo <- n_null_homo; empty$treat <- treat
+        empty$N <- N
         return(empty)
       }
 
@@ -353,7 +348,7 @@ server_null_alleles <- function(id, rv) {
            alleles=alleles, n_valid_geno=n_valid_geno, treat=treat)
     }
 
-    # ── Weir (1996) FST components ─────────────────────────────────────────────
+    # ── Weir & Cockerham (1984) FST components ─────────────────────────────────────────────
     weir_components_allele <- function(pop_list, use_corr = FALSE) {
       r     <- length(pop_list)
       N_tot <- sum(sapply(pop_list, `[[`, "ni"))
@@ -722,7 +717,8 @@ server_null_alleles <- function(id, rv) {
       list(
         raw = quantile(fst_raw_b, c(alpha/2, 0.5, 1-alpha/2), na.rm=TRUE),
         ena = quantile(fst_ena_b, c(alpha/2, 0.5, 1-alpha/2), na.rm=TRUE),
-        dist = fst_ena_b
+        boot_raw_vec = fst_raw_b,
+        boot_ena_vec = fst_ena_b
       )
     }
 
@@ -777,55 +773,76 @@ server_null_alleles <- function(id, rv) {
     }
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  BOOTSTRAP OVER SUB-SAMPLES (individuals within populations)
-    #  - Uses its own (smaller) replicate count, nboot_subs, since this method
-    #    re-runs the EM algorithm for every (replicate x locus x population)
-    #    combination and is far more expensive than the vectorised loci
-    #    bootstrap above.
-    #  - Each EM run is capped at max_iter iterations (default 100, vs. 5000
-    #    for the main point estimate) — a bootstrap replicate only needs to
-    #    be "close enough", not fully converged to 1e-6, so this keeps runtime
-    #    reasonable without changing the statistical method itself.
-    #  - progress_cb(fraction_done), if supplied, is called periodically so
-    #    the caller can update a progress bar during this (long) step.
+    #  BOOTSTRAP OVER SUB-SAMPLES (= populations, resampled as whole blocks)
+    #
+    #  This resamples POPULATIONS with replacement (a population drawn twice
+    #  contributes twice; a population not drawn contributes nothing to that
+    #  replicate), exactly the convention already used elsewhere in this app
+    #  for "bootstrap over subsamples" (see server_general_stats.R /
+    #  mod_subdivision.R, boot_popblock_wc84_fst_auto()) — NOT a resampling of
+    #  individuals within each population, which is a different thing and was
+    #  the bug in the previous version of this function (it was also
+    #  incorrectly labelled "individuals").
+    #
+    #  Because population membership — not individual genotypes — is what's
+    #  being resampled, no EM re-run is needed: each replicate just reuses
+    #  the already-computed per-locus x per-population EM results (em_res),
+    #  picking which populations enter that replicate. This is both the
+    #  statistically correct scheme here and far cheaper computationally
+    #  than the previous (buggy) individual-level version.
+    #
+    #  Returns the summary CI AND the raw replicate vectors (boot_raw_vec /
+    #  boot_ena_vec) so the distribution can be shown/exported, not just its
+    #  quantiles.
     # ══════════════════════════════════════════════════════════════════════════
-    boot_subsamples_global_fst <- function(raw_df, em_res, base, treatments, nboot,
-                                            alpha, max_iter = 100L, progress_cb = NULL) {
-      markers <- names(em_res); pops <- names(em_res[[markers[1]]])
-      idx_by_pop_loc <- list()
-      for (pop in pops) for (loc in markers)
-        idx_by_pop_loc[[paste0(pop,"___",loc)]] <-
-          which(raw_df$Population==pop & raw_df$Marker==loc)
-      inds_by_pop <- lapply(pops, function(p) unique(raw_df$Individual[raw_df$Population==p]))
-      names(inds_by_pop) <- pops
+    boot_subsamples_global_fst <- function(em_res, nboot, alpha, progress_cb = NULL) {
+      markers <- names(em_res)
+      pops    <- names(em_res[[markers[1]]])
+      n_pop   <- length(pops)
       boot_raw <- boot_ena <- numeric(nboot)
+      # Per-locus accumulators (nboot x n_markers) — reuses the per-locus FST
+      # that compute_fst_global_full() already computes for every replicate,
+      # so per-locus CI comes essentially for free alongside the global one.
+      loc_raw <- matrix(NA_real_, nrow = nboot, ncol = length(markers),
+                         dimnames = list(NULL, markers))
+      loc_ena <- matrix(NA_real_, nrow = nboot, ncol = length(markers),
+                         dimnames = list(NULL, markers))
       report_every <- max(1L, as.integer(round(nboot / 20)))  # ~20 progress updates
       for (b in seq_len(nboot)) {
+        samp_pops <- sample(pops, n_pop, replace = TRUE)
         em_b <- list()
         for (loc in markers) {
-          em_b[[loc]] <- list()
-          treat <- as.character(treatments[loc] %||% "absent")
-          for (pop in pops) {
-            inds <- inds_by_pop[[pop]]
-            if (length(inds)==0L) { em_b[[loc]][[pop]] <- em_res[[loc]][[pop]]; next }
-            ri <- sample(inds, length(inds), replace=TRUE)
-            br <- idx_by_pop_loc[[paste0(pop,"___",loc)]]
-            ic <- raw_df$Individual[br]
-            ir <- unlist(lapply(ri, function(x) br[ic==x]))
-            gts <- raw_df$gt[ir]
-            em_b[[loc]][[pop]] <- if(length(gts)==0L) em_res[[loc]][[pop]]
-                                  else em_freena(gts, base, treat, max_iter = max_iter)
-          }
+          em_b[[loc]] <- stats::setNames(
+            lapply(samp_pops, function(p) em_res[[loc]][[p]]),
+            paste0("rep", seq_along(samp_pops))  # unique slot names, duplicates allowed
+          )
         }
         fg <- compute_fst_global_full(em_b)
         boot_raw[b] <- fg$global_raw %||% NA_real_
         boot_ena[b] <- fg$global_ena %||% NA_real_
+        pl <- fg$per_locus
+        if (!is.null(pl) && nrow(pl) > 0L) {
+          mtch <- match(pl$Locus, markers)
+          loc_raw[b, mtch] <- pl$FST_raw
+          loc_ena[b, mtch] <- pl$FST_ENA
+        }
         if (!is.null(progress_cb) && (b %% report_every == 0L || b == nboot))
           progress_cb(b / nboot)
       }
+      per_locus_ci <- do.call(rbind, lapply(markers, function(loc) {
+        qr <- quantile(loc_raw[, loc], c(alpha/2, 1-alpha/2), na.rm=TRUE)
+        qe <- quantile(loc_ena[, loc], c(alpha/2, 1-alpha/2), na.rm=TRUE)
+        data.frame(Locus = loc,
+                   CI_lo_raw_subs = round(qr[1], 6), CI_hi_raw_subs = round(qr[2], 6),
+                   CI_lo_ENA_subs = round(qe[1], 6), CI_hi_ENA_subs = round(qe[2], 6),
+                   stringsAsFactors = FALSE)
+      }))
       list(
         raw = quantile(boot_raw, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
-        ena = quantile(boot_ena, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE)
+        ena = quantile(boot_ena, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
+        boot_raw_vec = boot_raw,
+        boot_ena_vec = boot_ena,
+        per_locus_ci = per_locus_ci
       )
     }
 
@@ -836,11 +853,21 @@ server_null_alleles <- function(id, rv) {
       req(db_ready())
       nboot      <- max(100L, min(99999L, as.integer(input$nboot %||% 5000L)))
       nboot_subs <- max(50L,  min(20000L, as.integer(input$nboot_subs %||% 500L)))
-      alpha   <- as.numeric(input$ci_level %||% "0.05")
+      alpha   <- as.numeric(input$alpha %||% 0.05)
+      if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
       ci      <- ci_bounds(alpha)
       base    <- as.integer(base_r())
       markers <- markers_r(); pops <- pops_r()
       treats  <- locus_treatments_r()   # user's per-locus coding choice
+
+      # Fixed random seed: guarantees the bootstrap CI reported in File 2 and
+      # the full replicate distribution in File 5 ALWAYS match exactly (they
+      # already come from the same single run — this also makes re-running
+      # with the same settings fully reproducible from one session to the
+      # next, instead of drawing a new random bootstrap sample every time).
+      boot_seed <- suppressWarnings(as.integer(input$boot_seed %||% 12345L))
+      if (!is.finite(boot_seed)) boot_seed <- 12345L
+      set.seed(boot_seed)
 
       withProgress(message = "Running computations...", value = 0, {
 
@@ -899,12 +926,13 @@ server_null_alleles <- function(id, rv) {
         setProgress(0.70, detail = sprintf("Bootstrap over loci — pairwise DCSE (%d reps)...", nboot))
         boot_pair_dc_loci <- boot_loci_pair_dc(dc_pair, nboot, alpha)
 
-        # 10. Bootstrap over sub-samples — global FST (own, smaller replicate
-        #     count; capped EM iterations per replicate; fine-grained progress
-        #     since this is by far the most expensive step)
+        # 10. Bootstrap over sub-samples (populations resampled as blocks) —
+        #     global FST. No EM re-run needed (population membership is what's
+        #     resampled, not genotypes), so this is fast even at nboot_subs
+        #     as large as the loci bootstrap.
         setProgress(0.78, detail = sprintf("Bootstrap over sub-samples — global FST (%d reps)...", nboot_subs))
         boot_gl_subs <- boot_subsamples_global_fst(
-          raw_df, em_res, base, treats, nboot_subs, alpha, max_iter = 100L,
+          em_res, nboot_subs, alpha,
           progress_cb = function(frac) {
             setProgress(0.78 + 0.17 * frac,
               detail = sprintf("Bootstrap over sub-samples — global FST (%d / %d reps)...",
@@ -916,15 +944,13 @@ server_null_alleles <- function(id, rv) {
         # ══════════════════════════════════════════════════════════════════════
         #  p_nulls TABLES — reproduces FreeNA's own null-allele-frequency report
         #  N            = efpop  (total individuals: genotyped + missing), per FreeNA
-        #  N_exp_blanks = N * p_nulls^2         (expected count of null homozygotes)
-        #  p_nulls_x_N  = N * p_nulls           (expected count of null allele copies)
+        #  N_exp_blanks = N * p_nulls^2         (expected number of null homozygotes)
         #  N_blanks     = n_absent + n_null_homo (missing genotypes, whichever coding
         #                 convention — 000000 or 999999 — this locus uses)
-        #  Coding / Recoded_blanks reflect the user's chosen coding per locus
-        #  (see locus_treatments_r() / locus_recoded_blanks_r() above)
+        #  Miss reflects the user's chosen coding per locus (see
+        #  locus_treatments_r() / locus_recoded_blanks_r() above)
         # ══════════════════════════════════════════════════════════════════════
         recoded_blanks <- locus_recoded_blanks_r()
-        recode_flags   <- locus_recode_flags_r()
 
         t1_rows <- list()
         for (loc in markers) {
@@ -934,27 +960,24 @@ server_null_alleles <- function(id, rv) {
             n_exp   <- n_total * (e$rd^2)           # N_total * p^2
             t1_rows[[length(t1_rows)+1L]] <- data.frame(
               Locus        = loc,
-              Population   = pop,
-              Coding       = as.character(treats[loc] %||% "absent"),
+              Subsample    = pop,
+              Miss         = as.character(recoded_blanks[[loc]] %||% 0L),
               p_nulls      = round(e$rd, 6),
               N            = n_total,                        # total (genotyped + missing)
               N_blanks     = as.integer(e$n_absent + e$n_null_homo), # missing, either coding
               N_exp_blanks = round(n_exp, 6),
-              p_nulls_x_N  = round(e$rd * n_total, 6),
               stringsAsFactors=FALSE)
           }
         }
         t1 <- do.call(rbind, t1_rows)
         t1$Locus <- factor(t1$Locus, levels=markers)
-        t1 <- t1[order(t1$Locus, t1$Population),]
+        t1 <- t1[order(t1$Locus, t1$Subsample),]
         t1$Locus <- as.character(t1$Locus)
 
         # Per-locus summary — N-weighted mean, exactly as FreeNA reports it,
         # plus a one-sided binomial test (P[X <= N_blanks] with size = N_tot,
         # prob = Av(N_exp_blanks)/N_tot), rounded to 3 decimals as FreeNA does.
-        # Recoded_blanks reports the coding actually found in the data (999 or
-        # 0); Recode is the user's optional sensitivity-check flag (0 = flagged,
-        # blank = not flagged).
+        # Recoded_blanks reports the coding actually used per locus (999 or 0).
         t2_rows <- lapply(markers, function(loc) {
           sub      <- t1[t1$Locus==loc,,drop=FALSE]
           vidx     <- !is.na(sub$p_nulls)
@@ -969,7 +992,7 @@ server_null_alleles <- function(id, rv) {
             round(stats::pbinom(n_blanks, size = n_tot, prob = prob), 3) else NA_real_
           data.frame(
             Locus          = loc,
-            Coding         = as.character(treats[loc] %||% "absent"),
+            Miss           = as.character(recoded_blanks[[loc]] %||% 0L),
             Av_N_exp_blanks= round(av_nexp, 6),
             Av_p_nulls     = round(av_p,  6),
             N_tot          = n_tot,
@@ -977,8 +1000,6 @@ server_null_alleles <- function(id, rv) {
             f_expBlanks    = round(f_exp, 6),
             p_value        = pval,
             p_nulls        = round(av_p, 6),
-            Recoded_blanks = as.integer(recoded_blanks[[loc]] %||% 0L),
-            Recode         = if (isTRUE(recode_flags[[loc]])) 0L else NA_integer_,
             stringsAsFactors=FALSE)
         })
         t2 <- do.call(rbind, t2_rows)
@@ -995,7 +1016,7 @@ server_null_alleles <- function(id, rv) {
           boot_gl_subs      = boot_gl_subs,
           boot_pair_fst     = boot_pair_fst_loci,
           boot_pair_dc      = boot_pair_dc_loci,
-          nboot = nboot, nboot_subs = nboot_subs, alpha = alpha, ci = ci,
+          nboot = nboot, nboot_subs = nboot_subs, boot_seed = boot_seed, alpha = alpha, ci = ci,
           treats = treats, markers = markers, pops = pops,
           em_res = em_res
         )
@@ -1003,39 +1024,73 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  METADATA HEADER for output files
+    #  OUTPUT FILE NAMING — root auto-suggested from the uploaded data file's
+    #  name (user can still edit/extend it, e.g. to note which loci were
+    #  recoded 999) + optional suffix (to tell two runs apart) + description.
+    #  No date (already shown by the file explorer).
     # ══════════════════════════════════════════════════════════════════════════
-    meta_header <- function(r, file_desc) {
+    data_root_r <- reactive({
+      fn <- rv$dataset_filename %||% ""
+      if (!nzchar(fn)) return("")
+      sub("\\.[^.]*$", "", fn)  # strip extension
+    })
+
+    # Suggest the root exactly once, as soon as the data file is known —
+    # never overwrite what the user has typed afterwards.
+    out_root_suggested <- reactiveVal(FALSE)
+    observeEvent(data_root_r(), {
+      dr <- data_root_r()
+      if (nzchar(dr) && !isTRUE(out_root_suggested())) {
+        updateTextInput(session, "out_root", value = dr)
+        out_root_suggested(TRUE)
+      }
+    }, ignoreInit = TRUE)
+
+    out_root_r <- reactive({
+      r <- trimws(input$out_root %||% "")
+      if (nzchar(r)) r else (if (nzchar(data_root_r())) data_root_r() else "SPG_")
+    })
+    out_suffix_r <- reactive({ trimws(input$out_suffix %||% "") })
+
+    out_filename <- function(desc) {
+      paste0(out_root_r(), out_suffix_r(), desc, ".txt")
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  METADATA HEADER for output files — kept to the strict necessary.
+    #  fst_dcse = FALSE for File 1 (no FST/DCSE computed there, so those
+    #  method lines don't belong in it).
+    # ══════════════════════════════════════════════════════════════════════════
+    meta_header <- function(r, file_desc, fst_dcse = TRUE) {
       ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
       treat_summary <- paste(sapply(r$markers, function(loc) {
         cd <- as.character(r$treats[loc] %||% "absent")
         sprintf("%s:%s", loc, if(cd=="absent") "000000" else "999999")
       }), collapse=", ")
       c(
-        paste0("# ", file_desc),
-        "# Method: Expectation-Maximization (EM) algorithm — Dempster, Laird & Rubin (1977)",
-        "# ENA correction (Excluding Null Alleles) — Chapuis & Estoup (2007) / FreeNA",
-        "# INA correction (Including Null Alleles) — Chapuis & Estoup (2007) / FreeNA",
-        "# FST: Weir (1996) following Genepop method",
-        "# DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
-        paste0("# Bootstrap replicates (over loci): ", r$nboot),
-        paste0("# Bootstrap replicates (over sub-samples, individuals): ", r$nboot_subs %||% r$nboot,
-               " (EM capped at 100 iterations per replicate)"),
-        "# Note: the sub-samples bootstrap CI can sit slightly above the observed value",
-        "#   (point estimate under its own lower bound) — a known property of resampling",
-        "#   individuals with replacement, not a computation error.",
-        paste0("# Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
-        paste0("# Locus coding, as chosen per locus (000000=absent/PCR failure; 999999=null homozygote):"),
-        paste0("#   ", treat_summary),
-        "#"
+        file_desc,
+        "Method: Expectation-Maximization (EM) algorithm - Dempster, Laird & Rubin (1977)",
+        if (fst_dcse) "ENA correction (Excluding Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
+        if (fst_dcse) "INA correction (Including Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
+        if (fst_dcse) "FST: Weir & Cockerham (1984) estimator",
+        if (fst_dcse) "DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
+        if (fst_dcse) paste0("Bootstrap replicates (over loci): ", r$nboot),
+        if (fst_dcse) paste0("Bootstrap replicates (over sub-samples): ", r$nboot_subs %||% r$nboot),
+        paste0("Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
+        if (fst_dcse) paste0("Bootstrap random seed: ", r$boot_seed %||% "NA",
+               " (same seed + same settings = identical bootstrap results every run)"),
+        "Locus coding for missing data (Miss) (000000=ignored; 999999=null homozygote):",
+        paste0("  ", treat_summary),
+        ""
       )
     }
 
-    write_with_header <- function(hdr, df, file, sep = ",") {
-      writeLines(hdr, con = file)
-      write.table(df, file = file, sep = sep, row.names = FALSE,
-                  quote = FALSE, append = TRUE,
-                  col.names = TRUE)
+    write_with_header <- function(hdr, df, file, sep = "\t") {
+      con <- file(file, open = "w", encoding = "UTF-8")
+      on.exit(close(con))
+      writeLines(hdr, con = con, useBytes = TRUE)
+      write.table(df, file = con, sep = sep, row.names = FALSE,
+                  quote = FALSE, append = TRUE, col.names = TRUE)
     }
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1044,36 +1099,23 @@ server_null_alleles <- function(id, rv) {
     file1_data <- reactive({
       r <- results_r()
       list(
-        header = meta_header(r, "File 1 — Null allele frequencies per locus x population"),
+        header = meta_header(r, "Null allele frequencies per locus x population", fst_dcse = FALSE),
         t1     = r$t1,
         t2     = r$t2
       )
     })
 
-    output$dl_file1_csv <- downloadHandler(
-      filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".csv"),
-      content  = function(file) {
-        d <- file1_data()
-        hdr <- c(d$header,
-                 "# Section 1: p_nulls per locus x population",
-                 "#")
-        write_with_header(hdr, d$t1, file, sep = ",")
-        write("", file = file, append = TRUE)
-        write("# Section 2: N-weighted mean per locus (all populations)",
-              file = file, append = TRUE)
-        write.table(d$t2, file = file, sep = ",", row.names = FALSE,
-                    quote = FALSE, append = TRUE, col.names = TRUE)
-      }
-    )
     output$dl_file1_txt <- downloadHandler(
-      filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".txt"),
+      filename = function() out_filename("null_allele_frequencies"),
       content  = function(file) {
         d <- file1_data()
         hdr <- c(d$header,
-                 "# Section 1: p_nulls per locus x population", "#")
+                 "Section 1: p_nulls per locus x population",
+                 "N_exp_blanks: expected number of null homozygotes = N * p_nulls^2",
+                 "")
         write_with_header(hdr, d$t1, file, sep = "\t")
         write("", file = file, append = TRUE)
-        write("# Section 2: N-weighted mean per locus", file = file, append = TRUE)
+        write("Section 2: N-weighted mean per locus", file = file, append = TRUE)
         write.table(d$t2, file = file, sep = "\t", row.names = FALSE,
                     quote = FALSE, append = TRUE, col.names = TRUE)
       }
@@ -1084,11 +1126,6 @@ server_null_alleles <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════════
     file2_data <- reactive({
       r <- results_r()
-      ci_pct <- paste0(round((1-r$alpha)*100,3), "%")
-      lo_lbl <- paste0("CI_lo_loci_", ci_pct)
-      hi_lbl <- paste0("CI_hi_loci_", ci_pct)
-      lo_ss  <- paste0("CI_lo_subsamp_", ci_pct)
-      hi_ss  <- paste0("CI_hi_subsamp_", ci_pct)
 
       # Per-locus FST
       pl <- r$fst_global$per_locus
@@ -1104,7 +1141,7 @@ server_null_alleles <- function(id, rv) {
         CI_hi_raw_loci  = round(r$boot_gl_loci$raw[3], 6),
         CI_lo_ENA_loci  = round(r$boot_gl_loci$ena[1], 6),
         CI_hi_ENA_loci  = round(r$boot_gl_loci$ena[3], 6),
-        # CI from bootstrap over sub-samples
+        # CI from bootstrap over sub-samples (populations resampled as blocks)
         CI_lo_raw_subs  = round(r$boot_gl_subs$raw[1], 6),
         CI_hi_raw_subs  = round(r$boot_gl_subs$raw[3], 6),
         CI_lo_ENA_subs  = round(r$boot_gl_subs$ena[1], 6),
@@ -1113,24 +1150,27 @@ server_null_alleles <- function(id, rv) {
         stringsAsFactors = FALSE
       )
 
-      # Add empty CI columns to per_locus (CI only available for global)
+      # Per-locus CI: "over loci" bootstrap doesn't apply to a single locus
+      # (nothing to resample) — stays NA. "Over sub-samples" (populations
+      # resampled as blocks) DOES apply per locus, and is filled in below.
       pl$CI_lo_raw_loci <- NA_real_; pl$CI_hi_raw_loci <- NA_real_
       pl$CI_lo_ENA_loci <- NA_real_; pl$CI_hi_ENA_loci <- NA_real_
-      pl$CI_lo_raw_subs <- NA_real_; pl$CI_hi_raw_subs <- NA_real_
-      pl$CI_lo_ENA_subs <- NA_real_; pl$CI_hi_ENA_subs <- NA_real_
+      plc <- r$boot_gl_subs$per_locus_ci
+      if (!is.null(plc) && nrow(plc) > 0L) {
+        pl <- merge(pl, plc, by = "Locus", all.x = TRUE, sort = FALSE)
+        pl <- pl[match(r$markers, pl$Locus), ]  # restore original locus order
+      } else {
+        pl$CI_lo_raw_subs <- NA_real_; pl$CI_hi_raw_subs <- NA_real_
+        pl$CI_lo_ENA_subs <- NA_real_; pl$CI_hi_ENA_subs <- NA_real_
+      }
 
       out <- rbind(glob[, names(pl)], pl)
-      list(header = meta_header(r, "File 2 — Global FST and FST-ENA with bootstrap CIs"),
+      list(header = meta_header(r, "Global FST and FST-ENA with bootstrap CIs"),
            data   = out)
     })
 
-    output$dl_file2_csv <- downloadHandler(
-      filename = function() paste0("global_FST_ENA_CI_", Sys.Date(), ".csv"),
-      content  = function(file) { d <- file2_data()
-        write_with_header(d$header, d$data, file, sep=",") }
-    )
     output$dl_file2_txt <- downloadHandler(
-      filename = function() paste0("global_FST_ENA_CI_", Sys.Date(), ".txt"),
+      filename = function() out_filename("global_FST_ENA_CI"),
       content  = function(file) { d <- file2_data()
         write_with_header(d$header, d$data, file, sep="\t") }
     )
@@ -1146,27 +1186,35 @@ server_null_alleles <- function(id, rv) {
       bd    <- r$boot_pair_dc
 
       merged <- merge(fst_l, dc_l, by=c("Pop1","Pop2"), all=TRUE)
-      if (!is.null(bf) && nrow(bf)>0)
-        merged <- merge(merged, bf[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci",
-                                      "CI_lo_raw","CI_hi_raw")],
-                        by=c("Pop1","Pop2"), all.x=TRUE,
-                        suffixes=c("","_FST_loci"))
-      if (!is.null(bd) && nrow(bd)>0)
-        merged <- merge(merged, bd[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci",
-                                      "CI_lo_raw","CI_hi_raw")],
-                        by=c("Pop1","Pop2"), all.x=TRUE,
-                        suffixes=c("_FST","_DCSE"))
-      list(header = meta_header(r, "File 3 — Pairwise statistics (all loci combined), long format"),
+
+      # Explicit, unambiguous CI column names — never rely on merge()'s
+      # automatic suffixing here: an earlier version used suffixes="_FST"/
+      # "_DCSE", which only marked *which statistic family* a CI column
+      # belonged to, not whether it was the raw or the ENA/INA-corrected
+      # bound — "CI_lo_loci_FST" and "CI_lo_raw_FST" both got the same
+      # "_FST" tag despite one being the FST-ENA bound and the other the
+      # raw-FST bound. Renamed explicitly below so raw vs ENA/INA is always
+      # in the column name itself.
+      if (!is.null(bf) && nrow(bf)>0) {
+        bf2 <- bf[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci","CI_lo_raw","CI_hi_raw")]
+        names(bf2) <- c("Pop1","Pop2",
+                         "CI_lo_FST_ENA_loci","CI_hi_FST_ENA_loci",
+                         "CI_lo_FST_raw_loci", "CI_hi_FST_raw_loci")
+        merged <- merge(merged, bf2, by=c("Pop1","Pop2"), all.x=TRUE)
+      }
+      if (!is.null(bd) && nrow(bd)>0) {
+        bd2 <- bd[,c("Pop1","Pop2","CI_lo_loci","CI_hi_loci","CI_lo_raw","CI_hi_raw")]
+        names(bd2) <- c("Pop1","Pop2",
+                         "CI_lo_DCSE_INA_loci","CI_hi_DCSE_INA_loci",
+                         "CI_lo_DCSE_raw_loci", "CI_hi_DCSE_raw_loci")
+        merged <- merge(merged, bd2, by=c("Pop1","Pop2"), all.x=TRUE)
+      }
+      list(header = meta_header(r, "Pairwise statistics (all loci combined), long format"),
            data   = merged)
     })
 
-    output$dl_file3_csv <- downloadHandler(
-      filename = function() paste0("pairwise_long_format_", Sys.Date(), ".csv"),
-      content  = function(file) { d <- file3_data()
-        write_with_header(d$header, d$data, file, sep=",") }
-    )
     output$dl_file3_txt <- downloadHandler(
-      filename = function() paste0("pairwise_long_format_", Sys.Date(), ".txt"),
+      filename = function() out_filename("pairwise_long_format"),
       content  = function(file) { d <- file3_data()
         write_with_header(d$header, d$data, file, sep="\t") }
     )
@@ -1177,7 +1225,7 @@ server_null_alleles <- function(id, rv) {
     file4_data <- reactive({
       r <- results_r()
       list(
-        header       = meta_header(r, "File 4 — Per-locus half-matrices (FST, FST-ENA, DCSE, DCSE-INA)"),
+        header       = meta_header(r, "Per-locus half-matrices (FST, FST-ENA, DCSE, DCSE-INA)"),
         fst_df       = r$per_locus_pair$fst,
         dc_df        = r$per_locus_pair$dc,
         pops         = r$pops,
@@ -1189,7 +1237,7 @@ server_null_alleles <- function(id, rv) {
       sub  <- df[df$Locus == loc,,drop=FALSE]
       n    <- length(pops)
       lines <- character(0)
-      lines <- c(lines, paste0("# Locus: ", loc, "  Statistic: ", stat_col))
+      lines <- c(lines, paste0("Locus: ", loc, "  Statistic: ", stat_col))
       hdr <- paste(c("", pops[-n]), collapse="\t")
       lines <- c(lines, hdr)
       for (i in seq(2, n)) {
@@ -1206,74 +1254,191 @@ server_null_alleles <- function(id, rv) {
     }
 
     output$dl_file4_txt <- downloadHandler(
-      filename = function() paste0("per_locus_half_matrices_", Sys.Date(), ".txt"),
+      filename = function() out_filename("per_locus_half_matrices"),
       content  = function(file) {
         d <- file4_data()
-        writeLines(d$header, con=file)
+        con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
+        writeLines(d$header, con = con, useBytes = TRUE)
         for (loc in d$markers) {
           for (sc in c("FST_raw","FST_ENA")) {
             ln <- half_matrix_txt(d$fst_df, sc, d$pops, loc)
-            write(ln, file=file, append=TRUE)
-            write("", file=file, append=TRUE)
+            writeLines(ln, con=con, useBytes=TRUE); writeLines("", con=con)
           }
           for (sc in c("DCSE_raw","DCSE_INA")) {
             ln <- half_matrix_txt(d$dc_df, sc, d$pops, loc)
-            write(ln, file=file, append=TRUE)
-            write("", file=file, append=TRUE)
-          }
-        }
-      }
-    )
-    # File 4 CSV — same tab-separated content as TXT (half-matrices are not
-    # really comma-friendly so we use tab for both; .csv extension for convenience)
-    output$dl_file4_csv <- downloadHandler(
-      filename = function() paste0("per_locus_half_matrices_", Sys.Date(), ".csv"),
-      content  = function(file) {
-        d <- file4_data()
-        writeLines(d$header, con = file)
-        for (loc in d$markers) {
-          for (sc in c("FST_raw","FST_ENA")) {
-            ln <- half_matrix_txt(d$fst_df, sc, d$pops, loc)
-            write(ln, file = file, append = TRUE)
-            write("", file = file, append = TRUE)
-          }
-          for (sc in c("DCSE_raw","DCSE_INA")) {
-            ln <- half_matrix_txt(d$dc_df, sc, d$pops, loc)
-            write(ln, file = file, append = TRUE)
-            write("", file = file, append = TRUE)
+            writeLines(ln, con=con, useBytes=TRUE); writeLines("", con=con)
           }
         }
       }
     )
 
-    # ── Download buttons UI ────────────────────────────────────────────────────
-    # ns must be captured explicitly — renderUI runs in a reactive context
-    # where the moduleServer enclosure may not be directly visible
-    make_dl_ui <- function(csv_id, txt_id) {
-      ns_local <- session$ns   # capture ns from session, always available
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 5 — Bootstrap distributions (the actual replicate values, not just
+    #  their summary quantiles) — over loci AND over sub-samples, global raw
+    #  and ENA FST.
+    # ══════════════════════════════════════════════════════════════════════════
+    file5_data <- reactive({
+      r <- results_r()
+      n <- max(length(r$boot_gl_loci$boot_raw_vec %||% numeric(0)),
+               length(r$boot_gl_subs$boot_raw_vec %||% numeric(0)))
+      pad <- function(v) { v <- v %||% numeric(0); length(v) <- n; v }
+      data <- data.frame(
+        Replicate                 = seq_len(n),
+        FST_raw_boot_over_loci    = pad(r$boot_gl_loci$boot_raw_vec),
+        FST_ENA_boot_over_loci    = pad(r$boot_gl_loci$boot_ena_vec),
+        FST_raw_boot_over_subs    = pad(r$boot_gl_subs$boot_raw_vec),
+        FST_ENA_boot_over_subs    = pad(r$boot_gl_subs$boot_ena_vec)
+      )
+      list(header = meta_header(r, "Bootstrap distributions (global FST, all replicates)"),
+           data   = data)
+    })
+
+    output$dl_file5_txt <- downloadHandler(
+      filename = function() out_filename("bootstrap_distributions"),
+      content  = function(file) { d <- file5_data()
+        write_with_header(d$header, d$data, file, sep="\t") }
+    )
+
+    output$boot_dist_plot <- plotly::renderPlotly({
+      r <- tryCatch(results_r(), error=function(e) NULL)
+      shiny::validate(shiny::need(!is.null(r), "Run computation first."))
+      plotly::plot_ly() |>
+        plotly::add_histogram(x = r$boot_gl_loci$boot_ena_vec, name = "Over loci",
+          marker = list(color="rgba(37,99,235,0.55)"), opacity = 0.7) |>
+        plotly::add_histogram(x = r$boot_gl_subs$boot_ena_vec, name = "Over sub-samples",
+          marker = list(color="rgba(220,38,38,0.55)"), opacity = 0.7) |>
+        plotly::layout(barmode = "overlay",
+          shapes = list(list(type="line", x0=r$fst_global$global_ena, x1=r$fst_global$global_ena,
+                              y0=0, y1=1, yref="paper",
+                              line=list(color="#0f172a", width=2, dash="dash"))),
+          xaxis = list(title = "Global FST-ENA (bootstrap replicates)"),
+          yaxis = list(title = "Count"),
+          legend = list(x=0.02, y=0.98))
+    })
+
+    # ── Save all files automatically to the chosen output folder ──────────────
+    # shinyFiles is OPTIONAL: if it isn't installed, the "Browse" button is
+    # simply not shown and the module keeps working — the user can still
+    # type/paste a folder path directly into the text box above (that path
+    # is all that's actually needed to auto-save the files).
+    shinyfiles_ok <- requireNamespace("shinyFiles", quietly = TRUE)
+
+    volumes_r <- if (shinyfiles_ok) {
+      tryCatch(
+        c(Home = path.expand("~"), "R installation" = R.home(), shinyFiles::getVolumes()()),
+        error = function(e) NULL)
+    } else NULL
+
+    if (shinyfiles_ok && !is.null(volumes_r)) {
+      tryCatch(
+        shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session),
+        error = function(e) { shinyfiles_ok <<- FALSE }
+      )
+    } else {
+      shinyfiles_ok <- FALSE
+    }
+
+    output$ui_dir_browse_btn <- renderUI({
+      if (isTRUE(shinyfiles_ok)) {
+        shinyFiles::shinyDirButton(session$ns("out_dir_browse"), "Browse", "Choose output folder",
+                                    class = "btn-action-secondary", style = "margin-bottom:15px;")
+      } else {
+        tags$span(style = "color:#94a3b8;font-size:11px;margin-bottom:15px;display:inline-block;",
+                  "(Browse unavailable \u2014 type/paste the folder path directly)")
+      }
+    })
+
+    out_dir_r <- reactive({
+      if (!isTRUE(shinyfiles_ok)) return(NULL)
+      sel <- input$out_dir_browse
+      if (is.null(sel) || identical(sel, 0)) return(NULL)
+      tryCatch(shinyFiles::parseDirPath(volumes_r, sel), error = function(e) NULL)
+    })
+
+    observeEvent(input$out_dir_browse, {
+      d <- out_dir_r()
+      if (!is.null(d) && length(d) && nzchar(d))
+        updateTextInput(session, "out_dir_display", value = d)
+    }, ignoreInit = TRUE, ignoreNULL = TRUE)
+
+    observeEvent(results_r(), {
+      dir <- trimws(input$out_dir_display %||% "")
+      if (!nzchar(dir) || !dir.exists(dir)) return(invisible(NULL))
+      tryCatch({
+        d1 <- file1_data(); d2 <- file2_data(); d3 <- file3_data()
+        d4 <- file4_data(); d5 <- file5_data()
+
+        write_with_header(c(d1$header, "Section 1: p_nulls per locus x population",
+                             "N_exp_blanks: expected number of null homozygotes = N * p_nulls^2", ""),
+                           d1$t1, file.path(dir, out_filename("null_allele_frequencies")), sep="\t")
+        write("", file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
+        write("Section 2: N-weighted mean per locus",
+              file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
+        write.table(d1$t2, file = file.path(dir, out_filename("null_allele_frequencies")),
+                    sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
+
+        write_with_header(d2$header, d2$data, file.path(dir, out_filename("global_FST_ENA_CI")), sep="\t")
+        write_with_header(d3$header, d3$data, file.path(dir, out_filename("pairwise_long_format")), sep="\t")
+
+        con4 <- file(file.path(dir, out_filename("per_locus_half_matrices")), open="w", encoding="UTF-8")
+        writeLines(d4$header, con=con4, useBytes=TRUE)
+        for (loc in d4$markers) {
+          for (sc in c("FST_raw","FST_ENA")) {
+            writeLines(half_matrix_txt(d4$fst_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
+            writeLines("", con=con4)
+          }
+          for (sc in c("DCSE_raw","DCSE_INA")) {
+            writeLines(half_matrix_txt(d4$dc_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
+            writeLines("", con=con4)
+          }
+        }
+        close(con4)
+
+        write_with_header(d5$header, d5$data, file.path(dir, out_filename("bootstrap_distributions")), sep="\t")
+
+        showNotification(
+          paste0("Saved 5 files to: ", dir), type = "message", duration = 6)
+      }, error = function(e) {
+        showNotification(paste0("Could not save to folder: ", conditionMessage(e)),
+                          type = "error", duration = 8)
+      })
+    }, ignoreInit = TRUE)
+
+    # ── Show the actual computed filename on each output-file card ────────────
+    output$ui_filename_1 <- renderUI(tags$code(out_filename("null_allele_frequencies")))
+    output$ui_filename_2 <- renderUI(tags$code(out_filename("global_FST_ENA_CI")))
+    output$ui_filename_3 <- renderUI(tags$code(out_filename("pairwise_long_format")))
+    output$ui_filename_4 <- renderUI(tags$code(out_filename("per_locus_half_matrices")))
+    output$ui_filename_5 <- renderUI(tags$code(out_filename("bootstrap_distributions")))
+
+    # ── Download buttons UI (fallback / always available) ─────────────────────
+    make_dl_ui <- function(txt_id) {
+      ns_local <- session$ns
       renderUI({
         req(results_r())
         tags$div(class="na-dl-row",
-          downloadButton(ns_local(csv_id), ".csv", class="btn btn-default btn-xs"),
           downloadButton(ns_local(txt_id), ".txt", class="btn btn-default btn-xs"))
       })
     }
-    output$ui_dl_file1 <- make_dl_ui("dl_file1_csv", "dl_file1_txt")
-    output$ui_dl_file2 <- make_dl_ui("dl_file2_csv", "dl_file2_txt")
-    output$ui_dl_file3 <- make_dl_ui("dl_file3_csv", "dl_file3_txt")
-    output$ui_dl_file4 <- make_dl_ui("dl_file4_csv", "dl_file4_txt")
+    output$ui_dl_file1 <- make_dl_ui("dl_file1_txt")
+    output$ui_dl_file2 <- make_dl_ui("dl_file2_txt")
+    output$ui_dl_file3 <- make_dl_ui("dl_file3_txt")
+    output$ui_dl_file4 <- make_dl_ui("dl_file4_txt")
+    output$ui_dl_file5 <- make_dl_ui("dl_file5_txt")
 
     # ── Run status ─────────────────────────────────────────────────────────────
     output$ui_run_status <- renderUI({
       r <- tryCatch(results_r(), error = function(e) NULL)
       if (is.null(r)) return(NULL)
       ci_pct <- paste0(round((1-r$alpha)*100,3),"%")
+      dir <- trimws(input$out_dir_display %||% "")
       tags$div(class="na-info", style="margin-top:.5rem;",
         icon("check-circle"), " ",
         tags$strong("Computation complete."),
         sprintf(" %d loci \u00b7 %d populations \u00b7 %d loci-replicates \u00b7 %d sub-sample-replicates \u00b7 %s CI.",
                 length(r$markers), length(r$pops), r$nboot, r$nboot_subs %||% r$nboot, ci_pct),
-        " Output files are ready for download above."
+        if (nzchar(dir)) sprintf(" 5 files saved to %s.", dir)
+        else " No output folder chosen \u2014 use the .txt buttons below to download each file."
       )
     })
 
@@ -1318,24 +1483,19 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ── Tab 1: null allele frequencies DTs ────────────────────────────────────
-    # t1 columns: Locus, Population, Coding, p_nulls, N, N_blanks,
-    #             N_exp_blanks, p_nulls_x_N  — matches FreeNA's per-locus x
-    #             population report (Locus names / Farm / p_nulls / N /
-    #             N_exp_blanks / p_nulls*N), with Coding/N_blanks kept as
-    #             transparent extras reflecting your chosen coding.
+    # t1 columns: Locus, Subsample, Miss, p_nulls, N, N_blanks, N_exp_blanks
     output$dt_t1 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t1)>0, "No data yet. Click Compute."))
       d <- r$t1
-      names(d) <- c("Locus","Population","Coding","p_nulls",
-                    "N","N_blanks","N_exp_blanks","p_nulls\u00d7N")
+      names(d) <- c("Locus","Subsample","Miss","p_nulls",
+                    "N","N_blanks","N_exp_blanks")
       DT::datatable(d, rownames=FALSE,
         options=list(pageLength=20, scrollX=TRUE, dom="lftip",
-          columnDefs=list(list(className="dt-right", targets=3:7))),
+          columnDefs=list(list(className="dt-right", targets=3:6))),
         class="compact hover stripe") |>
         DT::formatRound("p_nulls",           6) |>
         DT::formatRound("N_exp_blanks",       6) |>
-        DT::formatRound("p_nulls\u00d7N",     6) |>
         DT::formatStyle("p_nulls",
           backgroundColor = DT::styleInterval(
             c(0.05,0.10,0.20,0.30),
@@ -1343,19 +1503,18 @@ server_null_alleles <- function(id, rv) {
         DT::formatStyle("Locus", fontWeight="600", color="#0f172a")
     }, server=TRUE)
 
-    # t2 columns: Locus, Coding, Av(N_exp_blanks), Av(p_nulls), N_tot, N_blanks,
-    #             f(expBlanks), p-value, p_nulls, Recoded_blanks, Recode
-    #             — matches FreeNA's per-locus summary report exactly.
+    # t2 columns: Locus, Miss, Av(N_exp_blanks), Av(p_nulls), N_tot, N_blanks,
+    #             f(expBlanks), p-value, p_nulls — matches FreeNA's per-locus
+    #             summary report.
     output$dt_t2 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t2)>0, "No data yet. Click Compute."))
       d <- r$t2
-      names(d) <- c("Locus","Coding","Av(N_exp_blanks)","Av(p_nulls)",
-                    "N_tot","N_blanks","f(expBlanks)","p-value","p_nulls",
-                    "Recoded_blanks","Recode")
+      names(d) <- c("Locus","Miss","Av(N_exp_blanks)","Av(p_nulls)",
+                    "N_tot","N_blanks","f(expBlanks)","p-value","p_nulls")
       DT::datatable(d, rownames=FALSE,
         options=list(pageLength=20, scrollX=TRUE, dom="lftip",
-          columnDefs=list(list(className="dt-right", targets=2:10))),
+          columnDefs=list(list(className="dt-right", targets=2:8))),
         class="compact hover stripe") |>
         DT::formatRound("Av(p_nulls)",       6) |>
         DT::formatRound("Av(N_exp_blanks)",  6) |>
