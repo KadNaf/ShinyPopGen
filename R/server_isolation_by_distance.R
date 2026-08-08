@@ -921,5 +921,521 @@ server_isolation_by_distance <- function(id, rv) {
       content  = function(file) write.csv(partial_mantel_result_r()$table, file, row.names = FALSE)
     )
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  TAB 4 — Procrustes analysis & the Procrustean Association Metric (PAM)
+    #  Lisboa, Peres-Neto, Chaer, Jesus, Mitchell, Chapman & Berbara (2014,
+    #  PLoS ONE 9(6):e101238) — the "less controversial" alternative to
+    #  partial Mantel flagged in the previous pass. Unlike the Mantel tests
+    #  above (which compare pairwise DISTANCE matrices directly), Procrustes
+    #  compares the CONFIGURATIONS of populations in two ordination spaces
+    #  and, crucially, yields a per-population residual (PAM) rather than a
+    #  single global statistic — so it can show WHICH populations drive an
+    #  overall (mis)match between e.g. genetic and geographic structure.
+    #
+    #  Implementation (base R only, no new package dependency):
+    #  1. PCoA (classical scaling, cmdscale() with the Cailliez correction
+    #     for negative eigenvalues) turns each of the two chosen pairwise
+    #     matrices into an n_pops x k coordinate configuration.
+    #  2. Procrustes superimposition (translation + optimal rotation +
+    #     isotropic scaling) of the Y configuration onto X, via SVD — the
+    #     standard algorithm (Gower 1971; Peres-Neto & Jackson 2001).
+    #     Both configurations are first scaled to unit sum of squares so
+    #     the fit statistic m2 (Gower's statistic) lies in [0, 1] and the
+    #     trace correlation r = sqrt(1 - m2) is comparable across pairs of
+    #     variables.
+    #  3. PROTEST (Jackson 1995): permutation test of r by randomly
+    #     reshuffling which Y-configuration row corresponds to which X-row,
+    #     one-sided p = (n_perm_r_obs_or_higher + 1) / (n_perm + 1).
+    #  4. PAM: per-population Euclidean residual between each X point and
+    #     its fitted (rotated/scaled) Y point — the vector highlighted by
+    #     Lisboa et al. as usable in further regression/ANOVA analyses.
+    #
+    #  Like the simple Mantel test, this works on the SAME data source as
+    #  Tabs 2-3 (Pop1/Pop2 long-format table), but — unlike Mantel/partial
+    #  Mantel, which tolerate incomplete/rectangular pairwise data — PCoA
+    #  and Procrustes both need COMPLETE square matrices, so populations
+    #  with any missing pairwise value against the common set are dropped
+    #  (reported explicitly to the user rather than silently).
+    # ══════════════════════════════════════════════════════════════════════
+
+    output$pam_col_x_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("pam_col_x"), "Matrix X:", choices = cols,
+                  selected = .guess_col(cols, c("^FST_ENA$", "^FR$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$pam_col_y_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      cols <- setdiff(cols, input$pam_col_x %||% "")
+      selectInput(session$ns("pam_col_y"), "Matrix Y:", choices = cols,
+                  selected = .guess_col(cols, c("^Dgeo_m$", "^lnDgeo$", "^DCSE_INA$"),
+                                        if (length(cols)) cols[1] else NULL))
+    })
+
+    # Complete-case pruning: iteratively drop the population with the most
+    # missing pairwise values (against the current common set, across BOTH
+    # matrices) until none remain — needed because PCoA/Procrustes require
+    # complete square matrices, unlike the Mantel tests above.
+    .pam_prune_complete <- function(matX, matY) {
+      common <- intersect(rownames(matX), rownames(matY))
+      repeat {
+        if (length(common) < 4L) break
+        mx <- matX[common, common, drop = FALSE]; diag(mx) <- 0
+        my <- matY[common, common, drop = FALSE]; diag(my) <- 0
+        miss <- rowSums(is.na(mx)) + rowSums(is.na(my))
+        if (all(miss == 0)) break
+        drop_i <- which.max(miss)
+        common <- common[-drop_i]
+      }
+      list(common = common)
+    }
+
+    .pam_pcoa <- function(mat, labels, k) {
+      m <- mat[labels, labels, drop = FALSE]; diag(m) <- 0
+      m <- (m + t(m)) / 2  # enforce exact symmetry (numerical safety)
+      k_eff <- min(k, length(labels) - 1L)
+      pc <- tryCatch(stats::cmdscale(stats::as.dist(m), k = k_eff, eig = TRUE, add = TRUE),
+                     error = function(e) NULL)
+      if (is.null(pc)) return(NULL)
+      pts <- pc$points
+      if (ncol(pts) < k) pts <- cbind(pts, matrix(0, nrow(pts), k - ncol(pts)))
+      rownames(pts) <- labels
+      pts
+    }
+
+    # Procrustes rotation of Yc onto Xc (both pre-centred, pre-scaled to
+    # unit sum of squares) via SVD — Gower (1971) / Peres-Neto & Jackson (2001).
+    .procrustes_fit <- function(Xc, Yc) {
+      s <- svd(crossprod(Yc, Xc))
+      Rmat <- s$u %*% t(s$v)
+      d_sum <- sum(s$d)
+      Yfit <- Yc %*% Rmat
+      list(Yfit = Yfit, r = d_sum, m2 = 1 - d_sum^2)
+    }
+
+    .procrustes_prepare <- function(pts) {
+      c0 <- scale(pts, center = TRUE, scale = FALSE)
+      ss <- sum(c0^2)
+      if (!is.finite(ss) || ss <= 0) return(c0)
+      c0 / sqrt(ss)
+    }
+
+    pam_result_r <- eventReactive(input$run_pam, {
+      df <- mt_base_df_r()
+      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      xcol <- input$pam_col_x; ycol <- input$pam_col_y
+      shiny::validate(
+        shiny::need(all(c(p1c, p2c, xcol, ycol) %in% names(df)), "Selected columns not found."),
+        shiny::need(xcol != ycol, "Matrix X and Matrix Y must differ.")
+      )
+
+      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
+      build <- function(valcol) {
+        tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]),
+                           V = suppressWarnings(as.numeric(df[[valcol]])))
+        .mt_build_square(tmp, "P1", "P2", "V", all_labels)
+      }
+      matX <- build(xcol); matY <- build(ycol)
+
+      pr <- .pam_prune_complete(matX, matY)
+      common <- pr$common
+      shiny::validate(shiny::need(length(common) >= 4L,
+        "Not enough populations with complete pairwise data in both matrices (need >= 4)."))
+      n_dropped <- length(all_labels) - length(common)
+
+      k <- max(1L, min(as.integer(input$pam_k), length(common) - 1L))
+      Xpts <- .pam_pcoa(matX, common, k); Ypts <- .pam_pcoa(matY, common, k)
+      shiny::validate(shiny::need(!is.null(Xpts) && !is.null(Ypts),
+        "PCoA failed \u2014 check that both matrices contain valid numeric distances."))
+
+      Xc <- .procrustes_prepare(Xpts); Yc <- .procrustes_prepare(Ypts)
+      fit <- .procrustes_fit(Xc, Yc)
+
+      pam_vec <- sqrt(rowSums((Xc - fit$Yfit)^2))
+      names(pam_vec) <- common
+
+      n_perm <- as.integer(input$pam_n_perm)
+      withProgress(message = "Running PROTEST permutation test\u2026", value = 0.1, {
+        r_perm <- vapply(seq_len(n_perm), function(b) {
+          perm <- sample.int(length(common))
+          .procrustes_fit(Xc, Yc[perm, , drop = FALSE])$r
+        }, numeric(1L))
+        setProgress(1)
+      })
+      r_perm <- r_perm[is.finite(r_perm)]
+      p_val <- if (length(r_perm) > 0L) (sum(r_perm >= fit$r) + 1) / (length(r_perm) + 1) else NA_real_
+
+      list(pam = pam_vec, m2 = fit$m2, r = fit$r, p_value = p_val,
+           n_pops = length(common), n_dropped = n_dropped, k = k,
+           common = common, x_label = xcol, y_label = ycol, r_perm = r_perm)
+    })
+
+    output$box_pam_r <- renderValueBox({
+      r <- pam_result_r()
+      valueBox(round(r$r, 4), HTML("Trace correlation<br>r = sqrt(1-m\u00b2)"),
+               icon = icon("link"), color = "purple")
+    })
+    output$box_pam_m2 <- renderValueBox({
+      r <- pam_result_r()
+      valueBox(round(r$m2, 4), HTML("Gower's statistic<br>m\u00b2 (lower = better fit)"),
+               icon = icon("compress-arrows-alt"), color = "blue")
+    })
+    output$box_pam_p <- renderValueBox({
+      r <- pam_result_r(); pv <- r$p_value
+      col <- if (is.na(pv)) "yellow" else if (pv < 0.05) "green" else if (pv < 0.10) "yellow" else "red"
+      valueBox(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4),
+               HTML("PROTEST p-value<br>(one-sided)"), icon = icon("check-circle"), color = col)
+    })
+    output$box_pam_n <- renderValueBox({
+      r <- pam_result_r()
+      valueBox(r$n_pops, sprintf("Populations used (%d dropped: incomplete data)", r$n_dropped),
+               icon = icon("users"), color = "teal")
+    })
+
+    output$dt_pam <- DT::renderDT({
+      r <- pam_result_r()
+      d <- data.frame(Population = names(r$pam), PAM = round(unname(r$pam), 6), stringsAsFactors = FALSE)
+      d <- d[order(-d$PAM), , drop = FALSE]
+      DT::datatable(d, rownames = FALSE,
+        options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
+        class = "compact stripe hover") |>
+        DT::formatStyle("PAM", background = DT::styleColorBar(range(d$PAM), "#fca5a5"))
+    })
+
+    output$pam_plot <- plotly::renderPlotly({
+      r <- pam_result_r()
+      d <- data.frame(Population = names(r$pam), PAM = unname(r$pam))
+      d <- d[order(-d$PAM), , drop = FALSE]
+      plotly::plot_ly(d, x = ~reorder(Population, -PAM), y = ~PAM, type = "bar",
+                       marker = list(color = "#B45309")) %>%
+        plotly::layout(xaxis = list(title = "", tickangle = -45),
+                       yaxis = list(title = sprintf("PAM (%s vs %s, %d axes)", r$x_label, r$y_label, r$k)),
+                       margin = list(b = 90))
+    })
+
+    output$ui_pam_interpretation <- renderUI({
+      r <- pam_result_r()
+      tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
+        sprintf("Higher PAM = that population's relative position differs more between the %s and %s configurations.",
+                r$x_label, r$y_label), tags$br(),
+        "The PAM values above are a plain numeric vector (one row per population) \u2014 copy them ",
+        "into a spreadsheet to regress against covariates (e.g. herd management, host breed) or run an ",
+        "ANOVA by group, exactly as illustrated in Lisboa et al. (2014)."
+      )
+    })
+
+    output$dl_pam_csv <- downloadHandler(
+      filename = function() paste0("PAM_", Sys.Date(), ".csv"),
+      content  = function(file) {
+        r <- pam_result_r()
+        write.csv(data.frame(Population = names(r$pam), PAM = unname(r$pam)), file, row.names = FALSE)
+      }
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  TAB 5a — Mantel correlogram (Borcard & Legendre 2012, Ecology 93:1473-1481;
+    #  Sokal 1986; Oden & Sokal 1986). Splits the chosen distance variable
+    #  (e.g. D_geo) into equal-width classes; for each class, tests whether
+    #  the response matrix (e.g. FST-ENA) is more similar within that class
+    #  than among classes, using a Mantel test against a 0/1 "same class"
+    #  model matrix. One-tailed in the direction of the observed sign (the
+    #  paper's own convention, since the first classes are usually expected
+    #  a priori to show positive spatial correlation and later ones negative);
+    #  no correction for multiple testing across classes, matching the paper.
+    #  Reuses the exact same .mt_mantel_matrix() permutation machinery (and
+    #  therefore the same rectangular/incomplete-matrix tolerance) as the
+    #  simple Mantel test above.
+    # ══════════════════════════════════════════════════════════════════════
+
+    output$corr_col_y_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("corr_col_y"), "Response matrix (Y):", choices = cols,
+                  selected = .guess_col(cols, c("^FST_ENA$", "^FR$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$corr_col_d_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("corr_col_d"), "Distance classes from:", choices = cols,
+                  selected = .guess_col(cols, c("^Dgeo_m$", "^lnDgeo$"), if (length(cols)) cols[1] else NULL))
+    })
+
+    correlogram_result_r <- eventReactive(input$run_correlogram, {
+      df <- mt_base_df_r()
+      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      ycol <- input$corr_col_y; dcol <- input$corr_col_d
+      shiny::validate(
+        shiny::need(all(c(p1c, p2c, ycol, dcol) %in% names(df)), "Selected columns not found."),
+        shiny::need(ycol != dcol, "Response and distance columns must differ.")
+      )
+
+      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
+      build <- function(valcol) {
+        tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]),
+                           V = suppressWarnings(as.numeric(df[[valcol]])))
+        .mt_build_square(tmp, "P1", "P2", "V", all_labels)
+      }
+      matY <- build(ycol); matD <- build(dcol)
+
+      n_classes <- max(2L, as.integer(input$corr_n_classes))
+      d_vals <- matD[lower.tri(matD)]
+      d_vals <- d_vals[is.finite(d_vals)]
+      shiny::validate(shiny::need(length(d_vals) >= n_classes,
+        "Not enough valid pairwise distances to build that many classes."))
+      brks <- seq(min(d_vals), max(d_vals), length.out = n_classes + 1L)
+      brks[1] <- brks[1] - 1e-9; brks[length(brks)] <- brks[length(brks)] + 1e-9
+
+      n_perm <- as.integer(input$corr_n_perm); alpha <- as.numeric(input$corr_alpha)
+
+      withProgress(message = "Computing Mantel correlogram\u2026", value = 0, {
+        rows <- vector("list", n_classes)
+        for (k in seq_len(n_classes)) {
+          in_class <- matD > brks[k] & matD <= brks[k + 1L]
+          in_class[is.na(in_class)] <- FALSE
+          modelD <- matrix(0, nrow(matD), ncol(matD), dimnames = dimnames(matD))
+          modelD[in_class] <- 1
+          diag(modelD) <- 0
+          res <- .mt_mantel_matrix(matY, modelD, n_perm = n_perm, stat = "r")
+          p_one <- if (is.na(res$stat_obs)) NA_real_ else if (res$stat_obs >= 0) res$p_pos else res$p_neg
+          rows[[k]] <- data.frame(
+            Class     = k,
+            D_lo      = round(brks[k] + 1e-9, 6),
+            D_hi      = round(brks[k + 1L] - if (k == n_classes) 1e-9 else 0, 6),
+            D_mean    = round(mean(d_vals[d_vals > brks[k] & d_vals <= brks[k + 1L]]), 6),
+            n_pairs   = sum(in_class) / 2,
+            r_Mantel  = round(res$stat_obs, 6),
+            p_value   = round(p_one, 6),
+            significant = !is.na(p_one) && p_one < alpha,
+            stringsAsFactors = FALSE
+          )
+          setProgress(k / n_classes)
+        }
+      })
+      tbl <- do.call(rbind, rows)
+      list(table = tbl, y_label = ycol, d_label = dcol, alpha = alpha)
+    })
+
+    output$dt_correlogram <- DT::renderDT({
+      r <- correlogram_result_r()
+      d <- r$table; names(d)[names(d) == "significant"] <- sprintf("p < %.3g", r$alpha)
+      DT::datatable(d, rownames = FALSE,
+        options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
+        class = "compact stripe hover")
+    })
+
+    output$correlogram_plot <- plotly::renderPlotly({
+      r <- correlogram_result_r(); d <- r$table
+      cols <- ifelse(d$significant, "#B45309", "rgba(180,83,9,0.25)")
+      plotly::plot_ly(d, x = ~D_mean, y = ~r_Mantel, type = "scatter", mode = "lines+markers",
+                       marker = list(size = 12, color = cols, line = list(color = "#B45309", width = 1.5)),
+                       line = list(color = "#B45309", width = 1)) %>%
+        plotly::layout(
+          shapes = list(list(type = "line", x0 = 0, x1 = 1, xref = "paper", y0 = 0, y1 = 0,
+                              line = list(color = "grey", width = 1, dash = "dot"))),
+          xaxis = list(title = r$d_label), yaxis = list(title = sprintf("Mantel r (%s)", r$y_label)),
+          title = list(text = "Filled = significant, open = not significant", font = list(size = 11)))
+    })
+
+    output$dl_correlogram_csv <- downloadHandler(
+      filename = function() paste0("mantel_correlogram_", Sys.Date(), ".csv"),
+      content  = function(file) write.csv(correlogram_result_r()$table, file, row.names = FALSE)
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  TAB 5b — Spatially-constrained (MSR) Mantel test
+    #  Wagner & Dray (2015, Methods Ecol Evol 6:1169-1178); Crabot, Clappe,
+    #  Dray & Datry (2019, Methods Ecol Evol 10:532-540). Addresses the
+    #  inflation of the classic (and partial) Mantel test's type I error
+    #  rate when BOTH matrices are spatially autocorrelated (Guillot &
+    #  Rousset 2013) — the caveat flagged for the partial-Mantel tab.
+    #
+    #  Procedure (Crabot et al. 2019, section 2.3-ii, "data obtained
+    #  directly as distances"): (1) PCoA of DX -> X_PCO configuration;
+    #  (2) build a spatial weighting matrix W and its Moran's Eigenvector
+    #  Maps (MEM); (3) generate nMSR random replicates of X_PCO that
+    #  preserve its spatial autocorrelation structure (Moran spectral
+    #  randomization) -> Euclidean distances D_X-MSR; (4) Mantel statistic
+    #  between D_X-MSR and the FIXED DY, nMSR times, to build the null
+    #  distribution and the corrected statistic r*_obs = robs - E(rM-MSR).
+    #
+    #  IMPLEMENTATION NOTES / SIMPLIFICATIONS (base R only, no spdep/
+    #  adespatial dependency):
+    #  - W is built here as a simple ROW-STANDARDIZED INVERSE-DISTANCE
+    #    matrix from the chosen distance column (not a Gabriel/Delaunay/
+    #    minimum-spanning-tree graph as in the paper's own comparisons) —
+    #    a common, defensible default, but a different W choice can change
+    #    results (the paper itself shows MSR Mantel is sensitive to W
+    #    misspecification), so treat this as one reasonable option, not
+    #    the only correct one.
+    #  - MSR replicates are generated per PCoA axis by keeping each MEM
+    #    coefficient's magnitude fixed (|a_i| = |cor(v_i, x)|) and applying
+    #    independent random signs. This satisfies the paper's defining
+    #    constraints exactly (identical Moran's I / multiscale structure,
+    #    Eqs 5-7) but is a coarser (discrete, 2^(n-1) possible replicates)
+    #    randomization than adespatial's continuous-rotation algorithm —
+    #    adequate for a permutation test's null distribution, but not a
+    #    byte-for-byte reimplementation of the original method.
+    # ══════════════════════════════════════════════════════════════════════
+
+    output$msr_col_x_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("msr_col_x"), "Matrix X (will be spatially randomized):", choices = cols,
+                  selected = .guess_col(cols, c("^FST_ENA$", "^FR$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$msr_col_y_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      cols <- setdiff(cols, input$msr_col_x %||% "")
+      selectInput(session$ns("msr_col_y"), "Matrix Y (fixed):", choices = cols,
+                  selected = .guess_col(cols, c("^Dgeo_m$", "^lnDgeo$", "^DCSE_INA$"),
+                                        if (length(cols)) cols[1] else NULL))
+    })
+    output$msr_col_w_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("msr_col_w"), "Distance used to build W (spatial weights):", choices = cols,
+                  selected = .guess_col(cols, c("^Dgeo_m$"), if (length(cols)) cols[1] else NULL))
+    })
+
+    # Moran's Eigenvector Maps from a row-standardized inverse-distance W
+    .mem_from_dist <- function(matD, labels) {
+      d <- matD[labels, labels, drop = FALSE]; diag(d) <- 0
+      W <- ifelse(is.finite(d) & d > 0, 1 / d, 0)
+      rs <- rowSums(W); rs[rs == 0] <- 1
+      W <- W / rs                                    # row-standardized
+      n <- length(labels)
+      Wc <- (diag(n) - matrix(1/n, n, n)) %*% W %*% (diag(n) - matrix(1/n, n, n))
+      Wc <- (Wc + t(Wc)) / 2                          # numerical symmetry
+      e <- eigen(Wc, symmetric = TRUE)
+      keep <- which(abs(e$values) > 1e-8)
+      keep <- keep[seq_len(min(length(keep), n - 1L))]
+      list(V = e$vectors[, keep, drop = FALSE], lambda = e$values[keep])
+    }
+
+    .msr_replicate <- function(x, V) {
+      xc <- x - mean(x)
+      ss <- sum(xc^2)
+      if (!is.finite(ss) || ss == 0) return(x)
+      corr <- as.numeric(crossprod(V, xc)) / sqrt(colSums(V^2) * ss)   # cor(v_i, x)
+      signs <- sample(c(-1, 1), length(corr), replace = TRUE)
+      a <- corr * signs
+      scl <- sqrt(ss) / sqrt(sum(a^2))                # rescale so xMSR has the same variance as x
+      mean(x) + as.numeric(V %*% (a * scl))
+    }
+
+    .mantel_stat_only <- function(mat1, mat2) {
+      common <- intersect(rownames(mat1), rownames(mat2))
+      if (length(common) < 3L) return(NA_real_)
+      m1 <- mat1[common, common, drop = FALSE]; m2 <- mat2[common, common, drop = FALSE]
+      idx <- which(lower.tri(m1)); xx <- m1[idx]; yy <- m2[idx]
+      ok <- is.finite(xx) & is.finite(yy)
+      if (sum(ok) < 3L) return(NA_real_)
+      suppressWarnings(cor(xx[ok], yy[ok]))
+    }
+
+    msr_mantel_result_r <- eventReactive(input$run_msr, {
+      df <- mt_base_df_r()
+      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      xcol <- input$msr_col_x; ycol <- input$msr_col_y; wcol <- input$msr_col_w
+      shiny::validate(
+        shiny::need(all(c(p1c, p2c, xcol, ycol, wcol) %in% names(df)), "Selected columns not found."),
+        shiny::need(xcol != ycol, "Matrix X and Matrix Y must differ.")
+      )
+
+      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
+      build <- function(valcol) {
+        tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]),
+                           V = suppressWarnings(as.numeric(df[[valcol]])))
+        .mt_build_square(tmp, "P1", "P2", "V", all_labels)
+      }
+      matX <- build(xcol); matY <- build(ycol); matW <- build(wcol)
+
+      pr <- .pam_prune_complete(matX, matY)
+      common <- intersect(pr$common, .pam_prune_complete(matX, matW)$common)
+      shiny::validate(shiny::need(length(common) >= 5L,
+        "Not enough populations with complete data across X, Y and the spatial-weights distance (need >= 5)."))
+      n_dropped <- length(all_labels) - length(common)
+
+      k <- max(1L, min(as.integer(input$msr_k), length(common) - 2L))
+      Xpts <- .pam_pcoa(matX, common, k)
+      shiny::validate(shiny::need(!is.null(Xpts), "PCoA on Matrix X failed."))
+
+      mem <- .mem_from_dist(matW, common)
+      shiny::validate(shiny::need(ncol(mem$V) >= 1L, "Could not build spatial eigenvectors (MEM) from the chosen distance."))
+
+      matY_c <- matY[common, common, drop = FALSE]; diag(matY_c) <- 0
+      Dx_obs <- as.matrix(stats::dist(Xpts))
+      r_obs  <- .mantel_stat_only(Dx_obs, matY_c)
+
+      n_msr <- as.integer(input$msr_n_perm)
+      withProgress(message = "Running MSR-Mantel\u2026", value = 0, {
+        r_msr <- vapply(seq_len(n_msr), function(b) {
+          Xmsr <- apply(Xpts, 2, .msr_replicate, V = mem$V)
+          rownames(Xmsr) <- common
+          Dmsr <- as.matrix(stats::dist(Xmsr))
+          .mantel_stat_only(Dmsr, matY_c)
+        }, numeric(1L))
+        setProgress(1)
+      })
+      r_msr <- r_msr[is.finite(r_msr)]
+      e_rmsr <- if (length(r_msr) > 0L) mean(r_msr) else NA_real_
+      r_corrected <- r_obs - e_rmsr
+      p_val <- if (length(r_msr) > 0L) (sum(r_msr >= r_obs) + 1) / (length(r_msr) + 1) else NA_real_
+
+      list(r_obs = r_obs, e_rmsr = e_rmsr, r_corrected = r_corrected, p_value = p_val,
+           r_msr = r_msr, n_pops = length(common), n_dropped = n_dropped, k = k,
+           x_label = xcol, y_label = ycol, w_label = wcol)
+    })
+
+    output$box_msr_robs <- renderValueBox({
+      r <- msr_mantel_result_r()
+      valueBox(round(r$r_obs, 4), "Observed Mantel r", icon = icon("chart-line"), color = "purple")
+    })
+    output$box_msr_corrected <- renderValueBox({
+      r <- msr_mantel_result_r()
+      valueBox(round(r$r_corrected, 4), HTML("Corrected r*<br>(r_obs \u2212 E[r_MSR])"),
+               icon = icon("map-marker-alt"), color = "blue")
+    })
+    output$box_msr_p <- renderValueBox({
+      r <- msr_mantel_result_r(); pv <- r$p_value
+      col <- if (is.na(pv)) "yellow" else if (pv < 0.05) "green" else if (pv < 0.10) "yellow" else "red"
+      valueBox(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4),
+               "MSR p-value (one-sided)", icon = icon("check-circle"), color = col)
+    })
+    output$box_msr_n <- renderValueBox({
+      r <- msr_mantel_result_r()
+      valueBox(r$n_pops, sprintf("Populations used (%d dropped: incomplete data)", r$n_dropped),
+               icon = icon("users"), color = "teal")
+    })
+
+    output$msr_hist <- plotly::renderPlotly({
+      r <- msr_mantel_result_r()
+      shiny::req(length(r$r_msr) > 0L)
+      plotly::plot_ly() %>%
+        plotly::add_histogram(x = r$r_msr, nbinsx = 40,
+          marker = list(color = "rgba(180,83,9,0.55)", line = list(color = "rgba(180,83,9,1)", width = 0.4))) %>%
+        plotly::layout(
+          shapes = list(
+            list(type = "line", x0 = r$r_obs, x1 = r$r_obs, y0 = 0, y1 = 1, yref = "paper",
+                 line = list(color = "#B40F20", width = 2, dash = "dash")),
+            list(type = "line", x0 = r$e_rmsr, x1 = r$e_rmsr, y0 = 0, y1 = 1, yref = "paper",
+                 line = list(color = "#333a43", width = 2, dash = "dot"))),
+          xaxis = list(title = "Mantel r (MSR replicates)"), yaxis = list(title = "Count"),
+          title = list(text = "Red dashed = observed r \u00b7 Grey dotted = E(r_MSR)", font = list(size = 11)),
+          margin = list(t = 40), showlegend = FALSE)
+    })
+
+    output$ui_msr_summary <- renderUI({
+      r <- msr_mantel_result_r()
+      tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
+        sprintf("X = %s (spatially randomized, k=%d PCoA axes) \u2014 Y = %s (fixed) \u2014 W built from %s.",
+                r$x_label, r$k, r$y_label, r$w_label), tags$br(),
+        "If r_obs sits well outside the MSR null distribution (histogram), the association between X and Y ",
+        "is unlikely to be a spurious artefact of both matrices sharing spatial structure."
+      )
+    })
+
   })
 }
