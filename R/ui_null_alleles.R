@@ -8,7 +8,7 @@
 # References:
 #   Dempster, Laird & Rubin (1977)  — EM algorithm
 #   Chapuis & Estoup (2007)         — FreeNA: ENA and INA corrections
-#   Weir & Cockerham (1984)          — FST estimator
+#   Weir & Cockerham (1984)         — FST unbiased moment estimator
 #   Cavalli-Sforza & Edwards (1967) — Chord genetic distance (DCSE)
 
 null_alleles_UI <- function(id) {
@@ -218,13 +218,13 @@ null_alleles_UI <- function(id) {
           column(3,
             numericInput(ns("boot_seed"),
               label = "Random seed (reproducibility):",
-              value = 12345, min = 1, max = 999999, step = 1))
+              value = 12345, min = 1, max = 2147483647, step = 1))
         ),
         tags$p(style="color:#777;font-size:11px;",
-          "Same seed + same settings = identical bootstrap results every run. The confidence ",
-          "interval in File 2 and the full replicate distribution in File 5 always come from the ",
-          "same bootstrap run, so they match exactly \u2014 if you compare them across two different runs ",
-          "(different seed, or seed changed), small differences are expected since the bootstrap draw itself differs."),
+          "Bootstrap resampling is random: point estimates (FST, FST-ENA, DCSE\u2026) never change, ",
+          "but confidence interval bounds will shift slightly from run to run unless the seed is kept ",
+          "the same. Re-run with the same seed, same data and same number of replicates to reproduce ",
+          "the exact same confidence intervals \u2014 the seed used is recorded in every exported file."),
 
         tags$hr(style="margin:1rem 0;"),
 
@@ -236,17 +236,20 @@ null_alleles_UI <- function(id) {
             tags$div(style="display:flex; align-items:flex-end; gap:8px;",
               tags$div(style="flex:1;",
                 textInput(ns("out_dir_display"), "Please choose a folder for output files:",
-                          value = "", placeholder = "(paste/type a folder path, or use Browse if available)")),
-              uiOutput(ns("ui_dir_browse_btn"), inline = TRUE))),
+                          value = "", placeholder = "(no folder chosen \u2014 files download to your browser instead)")),
+              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
+                                          class = "btn-action-secondary", style="margin-bottom:15px;"))),
           column(6,
-            textInput(ns("out_root"), "Root for the name of output files (from your data file — edit/extend freely):",
-                      value = "", placeholder = "auto-filled once your data is loaded"))
+            textInput(ns("out_root"), "Root for the name of output files:",
+                      value = "", placeholder = "auto-filled from the imported data file name"))
         ),
         tags$p(style="color:#777;font-size:11px;",
+          "The root is proposed automatically from the name of the data file you imported ",
+          "(e.g. ", tags$code("BoophilusAdultsDataCattle"), "), and you can freely edit or extend it ",
+          "\u2014 e.g. add your own notes such as which loci were recoded to 999999. ",
           "File names = root + description (e.g. ", tags$code("<root>null_allele_frequencies.txt"),
-          "). The root is pre-filled from your data file's name and is fully yours to edit — ",
-          "add anything you like (e.g. which loci were recoded 999). No date is added to file names ",
-          "(already shown by the file explorer) \u2014 use the optional suffix below to tell two runs apart."),
+          "). No date is added (already shown by the file explorer) \u2014 if you re-run with a ",
+          "different missing-data coding and want to keep both results, add your own suffix below."),
         textInput(ns("out_suffix"), "Optional suffix to distinguish this run (e.g. \"1\"):", value = ""),
         tags$p(style="color:#777;font-size:11px;",
           "Files are saved as tab-delimited ", tags$strong(".txt"), " (not .csv)."),
@@ -382,11 +385,12 @@ null_alleles_UI <- function(id) {
                value = "tab_fst", br(),
 
         tags$div(class="na-info",
-          tags$strong("Global multilocus FST"), " \u2014 Weir & Cockerham (1984). ",
+          tags$strong("Global multilocus FST"), " \u2014 Weir & Cockerham (1984) unbiased moment estimator. ",
           tags$strong("FST-ENA"), ": EM-corrected frequencies, Excluding Null Alleles \u2014 Chapuis & Estoup (2007).",
           tags$br(),
-          "Bootstrap CI over loci (resample loci with replacement) and over sub-samples ",
-          "(resample individuals within each population with replacement)."
+          "Bootstrap CI over loci (resample loci with replacement, multilocus estimates only) and over ",
+          "sub-samples (resample populations as whole blocks with replacement, available both for the ",
+          "multilocus estimate and per locus \u2014 see the per-locus table below)."
         ),
 
         tags$div(class="na-panel",

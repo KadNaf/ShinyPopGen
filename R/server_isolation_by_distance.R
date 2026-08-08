@@ -145,16 +145,17 @@ server_isolation_by_distance <- function(id, rv) {
 
     full_pair_table_r <- reactive({
       na <- na_results_r()
-      fst_long <- na$fst_pair$long                     # Pop1,Pop2,FST_raw,FST_ENA,Delta_FST
-      dc_long  <- na$dc_pair$long                       # Pop1,Pop2,DCSE_raw,DCSE_INA,Delta_DCSE
-      bf       <- na$boot_pair_fst                      # Pop1,Pop2,FST_ENA_obs,CI_lo_loci,...,FST_raw_obs,CI_lo_raw,CI_hi_raw
+      fst_long <- na$fst_pair$long                     # Pop1,Pop2,FST_raw,FST_ENA
+      dc_long  <- na$dc_pair$long                       # Pop1,Pop2,DCSE_raw,DCSE_INA
+      bf       <- na$boot_pair_fst                      # Pop1,Pop2,FST_ENA_obs,FST_ENA_CI_lo_loci,...,FST_raw_obs,FST_raw_CI_lo_loci,FST_raw_CI_hi_loci
       bd       <- na$boot_pair_dc
 
       df <- merge(fst_long, dc_long[, c("Pop1","Pop2","DCSE_raw","DCSE_INA")],
                   by = c("Pop1","Pop2"), sort = FALSE)
 
       if (!is.null(bf) && nrow(bf) > 0L) {
-        bf2 <- bf[, c("Pop1","Pop2","CI_lo_raw","CI_hi_raw","CI_lo_loci","CI_hi_loci")]
+        bf2 <- bf[, c("Pop1","Pop2","FST_raw_CI_lo_loci","FST_raw_CI_hi_loci",
+                      "FST_ENA_CI_lo_loci","FST_ENA_CI_hi_loci")]
         names(bf2)[3:6] <- c("FST_raw_lo","FST_raw_hi","FST_ENA_lo","FST_ENA_hi")
         df <- merge(df, bf2, by = c("Pop1","Pop2"), sort = FALSE)
       } else {
@@ -162,7 +163,8 @@ server_isolation_by_distance <- function(id, rv) {
         df$FST_ENA_lo <- NA_real_; df$FST_ENA_hi <- NA_real_
       }
       if (!is.null(bd) && nrow(bd) > 0L) {
-        bd2 <- bd[, c("Pop1","Pop2","CI_lo_raw","CI_hi_raw","CI_lo_loci","CI_hi_loci")]
+        bd2 <- bd[, c("Pop1","Pop2","DCSE_raw_CI_lo_loci","DCSE_raw_CI_hi_loci",
+                      "DCSE_INA_CI_lo_loci","DCSE_INA_CI_hi_loci")]
         names(bd2)[3:6] <- c("DCSE_raw_lo","DCSE_raw_hi","DCSE_INA_lo","DCSE_INA_hi")
         df <- merge(df, bd2, by = c("Pop1","Pop2"), sort = FALSE)
       } else {

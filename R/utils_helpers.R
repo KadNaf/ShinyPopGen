@@ -2380,7 +2380,7 @@ randomized_g_stats <- function(data, loci, n_simulations, calculate_g_stat, incl
 #
 # Matches the Pascal reference exactly on:
 #   - EM null-allele frequency estimation (Dempster, Laird & Rubin 1977 / FreeNA)
-#   - WC84 Fst (Weir 1996 / Genepop method), raw and ENA-corrected
+#   - WC84 Fst (Weir & Cockerham 1984), raw and ENA-corrected
 #     -> per-locus nc is baked into s2P, then RE-MULTIPLIED by nc again when
 #        aggregating across loci (the Pascal sum_stats / final_stats double
 #        weighting) for BOTH global and pairwise Fst.

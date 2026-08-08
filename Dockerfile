@@ -5,7 +5,7 @@
 
 FROM rocker/shiny:latest
 
-LABEL org.opencontainers.image.source="https://github.com/vincentmanz/shinypopgen"
+LABEL org.opencontainers.image.source="https://github.com/KadNaf/SPG1"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Disable renv and any user .Rprofile for all R commands in this image

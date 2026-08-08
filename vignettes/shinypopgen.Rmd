@@ -21,13 +21,15 @@ It covers the full analytical workflow:
 
 1. Data import and automatic column detection
 2. Allele frequency distributions and missing data
-3. General statistics (N, Na, Ho, He, F-statistics)
-4. Local panmixia -- FIS per locus and population (Weir & Cockerham 1984)
-5. Global panmixia -- FIT across all populations
-6. Population subdivision -- FST per locus and globally
-7. Genetic diversities -- HS, HT, locus bootstrap
-8. Linkage disequilibrium -- pairwise G-test with permutation p-values
-9. Null allele frequency estimation
+3. General statistics (N, Na, Ho, He)
+4. Null allele frequency estimation (FreeNA EM algorithm, ENA correction)
+5. Local panmixia -- FIS per locus and population (Weir & Cockerham 1984)
+6. Global panmixia -- FIT across all populations
+7. Population subdivision -- FST per locus and globally
+8. Genetic diversities -- HS, HT, with resampling over individuals,
+   populations, or loci
+9. Linkage disequilibrium -- pairwise G-test with permutation p-values
+10. Isolation by distance -- FST/(1-FST) vs. geographic distance, Mantel test
 
 ## Launch the application
 
@@ -41,8 +43,12 @@ no data is sent to any server.
 
 ## Data format
 
-ShinyPopGen accepts tab-separated or comma-separated plain text files.
-Two genotype encodings are supported.
+ShinyPopGen accepts CSV or tabulation-delimited TXT files. The separator
+(comma, semicolon, or tab) is detected automatically. The file must contain
+a header row, one *population* column, and one or more *genetic marker*
+columns; metadata columns (e.g. individual ID, latitude, longitude) are
+optional and preserved through the analysis. Two genotype encodings are
+supported, but a single file must use only one of them.
 
 ### Single-column format
 
@@ -58,73 +64,120 @@ Pop2        145/145  92/92    92/100
 
 ### Two-column format
 
-Each locus occupies two consecutive columns (one per allele):
+Each locus occupies two columns, one per allele. The first allele column
+carries the locus name (e.g. `B12`); the second must be named `B12_1` (or
+`B12.1`) -- any column whose name ends in a `_1`/`.1`-`.9` suffix is
+auto-paired with the column obtained by removing that suffix. Paired
+columns do not need to be adjacent:
 
 ```
-Population  B12  B12  C07  C07
-Pop1        192  194  145  192
-Pop1        200  200  179  179
-Pop2        145  145   92   92
+Population  B12  B12_1  C07  C07_1
+Pop1        192  194    145  192
+Pop1        200  200    179  179
+Pop2        145  145     92   92
 ```
 
-Missing genotypes should be coded consistently (default: `0`).
+If auto-detection picks up the wrong columns, use the manual column
+assignment panel on the Import page instead.
+
+Missing genotypes are coded as `0` (or `0/0`) by default and are
+customisable on import. For **null allele** screening specifically, null
+homozygotes must be coded as `999999/999999`, distinct from missing data
+(`0/0`); a per-locus override panel is available in the Null Alleles tab.
 
 ## Worked example: *Boophilus* cattle ticks
 
-The package ships a demonstration dataset from Thierry de Meeus' teaching
+The package ships a demonstration dataset from Thierry de Meeûs' teaching
 material (`inst/extdata/default_dataset.csv`): 698 adult *Boophilus* ticks
 sampled from cattle across New Caledonia, genotyped at 6 microsatellite loci
 (B12, C07, D12, D10, A12, C03).
 
-### 1. Load the default dataset
+The steps below follow the app's recommended workflow (see the in-app
+**Help** tab).
 
-Click **"Load Default Data"** in the sidebar of the *Data Import & Filtering*
-tab. The application will:
+### 1. Import the data
+
+Click **"Load Default Data"** in the sidebar of the *Import Data* tab. The
+application will:
 
 - Import the file via DuckDB
 - Auto-detect the population column (`Pop`) and GPS coordinates
 - Detect the 12 allele columns (two-column format, loci B12 -- C03)
-- Build the internal `hf` table (individual x locus packed integers)
-- Display a preview and map of sampling localities
+- Build the internal genotype table (individual x locus, packed integers)
+- Display a preview table and a map of sampling localities
 
 ### 2. Allele frequencies
 
-Navigate to *Allele Freq & Missing Data*. You will see per-locus allele
-frequency bar charts and a missing-data summary table. The Boophilus dataset
-has no missing data.
+Navigate to *Allele Freq*. You will see per-locus allele frequency bar
+charts and a missing-data summary table; flag any locus with more than
+about 20% missing data. The Boophilus dataset has no missing data.
 
 ### 3. General statistics
 
-The *General Statistics* tab shows sample size (N), number of alleles (Na),
-observed heterozygosity (Ho), and expected heterozygosity (He) per locus and
-population, together with overall Weir & Cockerham (1984) F-statistics.
+The *General Stats* tab reports sample size (N), number of alleles (Na),
+observed heterozygosity (Ho), and expected heterozygosity (He) per locus
+and population.
 
-### 4. Local panmixia (FIS)
+### 4. Null alleles
 
-The *Local Panmixia* tab reports per-locus FIS values within each population,
-with:
+If the Ho/He ratio at a locus looks unusually low, check the *Null Alleles*
+tab: null allele frequencies are estimated per locus x population by the
+FreeNA EM algorithm (Chapuis & Estoup 2007), with both raw and
+ENA-corrected FST reported.
 
-- **Bootstrap 95% CI** (individual resampling, 1000 replicates by default)
-- **Permutation p-value** (within-population allele shuffling,
-  1000 permutations; `p = (B_ge + 1) / B`)
+### 5. Local panmixia (FIS)
 
-### 5. Linkage disequilibrium
+The *Local Panmixia* tab reports per-locus FIS values within each
+population (Weir & Cockerham 1984), with:
 
-The *Linkage Disequilibrium* tab tests all locus pairs within each population.
-The G-statistic is:
+- **Bootstrap 95% CI** (resampling over individuals; 5,000 replicates by
+  default)
+- **Permutation p-value** (alleles reassigned within each population;
+  5,000 permutations by default)
+
+### 6. Global panmixia (FIT)
+
+The *Global Panmixia* tab reports the multilocus FIT across all
+populations, with the same bootstrap/permutation approach as above.
+
+### 7. Subdivision (FST)
+
+The *Subdivision* tab estimates FST (Weir & Cockerham 1984) per locus and
+overall, with population-block or locus bootstrap CI and a permutation
+p-value; a genotype-reassignment G-test (as in FSTAT, Goudet et al. 1996)
+is also available for individuals with a complete multilocus genotype.
+
+### 8. Genetic diversities (HS, HT)
+
+The *Diversities* tab reports HS (within-population) and HT (total) gene
+diversity (Nei 1987), per locus and as multilocus estimates, with
+confidence intervals from resampling over individuals, populations, or
+loci depending on the estimator.
+
+### 9. Linkage disequilibrium
+
+The *LD* tab tests all locus pairs within each population. The G-statistic
+is:
 
 ```
 G = 2 * sum(O * log(O / E))
 ```
 
 where O and E are observed and expected counts under independence.
-P-values are Monte Carlo estimates from Fisher-Yates permutations of
-one locus column within each population.
+P-values are Monte Carlo estimates from permutations of one locus column
+within each population (10,000 permutations by default).
 
-### 6. Export results
+### 10. Isolation by distance
+
+The *Isolation by Distance* tab requires GPS metadata (present in the
+Boophilus dataset). It plots pairwise FST/(1-FST) against geographic
+distance following **Rousset (1997)**, and offers a Mantel permutation test
+of the association.
+
+### Export results
 
 Every results table has a download button (.csv / .txt). The formatted
-dataset can also be downloaded from the *Data Import* tab.
+dataset can also be downloaded from the *Import Data* tab.
 
 ## Statistical methods
 
@@ -133,9 +186,32 @@ All F-statistics follow **Weir & Cockerham (1984)**:
 > Weir, B.S. & Cockerham, C.C. (1984). Estimating F-statistics for the
 > analysis of population structure. *Evolution*, **38**, 1358--1370.
 
-Permutation p-values use the formula `p = (n_ge + 1) / B` where `n_ge` is
-the number of permuted statistics >= the observed value and `B` is the number
-of permutations, following:
+Gene diversity (HS, HT) follows **Nei (1987)**:
+
+> Nei, M. (1987). *Molecular Evolutionary Genetics*. Columbia University
+> Press, New York.
+
+Null allele frequencies and the ENA correction follow **Chapuis & Estoup
+(2007)** (the FreeNA method):
+
+> Chapuis, M.P. & Estoup, A. (2007). Microsatellite null alleles and
+> estimation of population differentiation. *Molecular Biology and
+> Evolution*, **24**, 621--631.
+
+Isolation by distance follows **Rousset (1997)**:
+
+> Rousset, F. (1997). Genetic differentiation and estimation of gene flow
+> from F-statistics under isolation by distance. *Genetics*, **145**,
+> 1219--1228.
+
+The genotype-reassignment G-test for subdivision follows **FSTAT**:
+
+> Goudet, J., Raymond, M., de Meeus, T. & Rousset, F. (1996). Testing
+> differentiation in diploid populations. *Genetics*, **144**, 1933--1940.
+
+Permutation p-values use the formula `p = (b + 1) / (m + 1)`, where `b` is
+the number of permuted statistics at least as extreme as the observed value
+and `m` is the number of permutations, following:
 
 > Phipson, B. & Smyth, G.K. (2010). Permutation p-values should never be
 > zero: calculating exact p-values when permutations are randomly drawn.
