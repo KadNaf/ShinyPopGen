@@ -54,23 +54,30 @@ server_isolation_by_distance <- function(id, rv) {
     })
 
     output$box_nloci <- renderValueBox({
-      valueBox(length(na_results_r()$markers), "Loci", icon = icon("dna"), color = "navy")
+      r <- tryCatch(na_results_r(), error = function(e) NULL)
+      valueBox(if (is.null(r)) "\u2014" else length(r$markers), "Loci", icon = icon("dna"), color = "navy")
     })
     output$box_npops <- renderValueBox({
-      valueBox(length(na_results_r()$pops), "Populations", icon = icon("users"), color = "teal")
+      r <- tryCatch(na_results_r(), error = function(e) NULL)
+      valueBox(if (is.null(r)) "\u2014" else length(r$pops), "Populations", icon = icon("users"), color = "teal")
     })
     output$box_fstena <- renderValueBox({
-      v <- round(na_results_r()$fst_global$global_ena, 4)
+      r <- tryCatch(na_results_r(), error = function(e) NULL)
+      v <- if (is.null(r)) NA_real_ else round(r$fst_global$global_ena, 4)
       col <- if (is.na(v)) "navy" else if (v > 0.15) "red" else if (v > 0.05) "yellow" else "green"
-      valueBox(if (is.na(v)) "NA" else v, HTML("Global F<sub>ST</sub>-ENA"),
+      valueBox(if (is.na(v)) "\u2014" else v, HTML("Global F<sub>ST</sub>-ENA"),
                icon = icon("chart-bar"), color = col)
     })
     output$box_nboot <- renderValueBox({
-      r <- na_results_r()
-      valueBox(r$nboot, "Bootstrap replicates (loci)", icon = icon("dice"), color = "purple")
+      r <- tryCatch(na_results_r(), error = function(e) NULL)
+      valueBox(if (is.null(r)) "\u2014" else r$nboot, "Bootstrap replicates (loci)", icon = icon("dice"), color = "purple")
     })
 
     output$ui_run_status <- renderUI({
+      if (isTRUE(identical(input$ibd_source, "external"))) {
+        return(tags$div(class = "na-info", icon("file-import"), " ",
+          "Using a re-loaded external pairwise file \u2014 the Null Alleles module is not needed for this run."))
+      }
       r <- tryCatch(na_results_r(), error = function(e) NULL)
       if (is.null(r)) return(NULL)
       tags$div(class = "na-info",
@@ -78,6 +85,34 @@ server_isolation_by_distance <- function(id, rv) {
         sprintf("Using Null Alleles results: %d loci \u00b7 %d populations \u00b7 %d pairwise combinations.",
                 length(r$markers), length(r$pops), nrow(r$fst_pair$long)))
     })
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  OUTPUT FILE NAMING — same convention as the Null Alleles module: root
+    #  auto-proposed from the imported data file's name (editable, never
+    #  silently overwritten once the user has typed their own), + optional
+    #  suffix. This module is meant to be usable on its own (e.g. re-loading
+    #  a previously exported/edited pairwise file — see ibd_source/mt_source
+    #  "external" options below), so the root also falls back gracefully
+    #  when no data file was ever imported in this session.
+    # ══════════════════════════════════════════════════════════════════════
+    last_auto_root_ibd <- reactiveVal("")
+    observeEvent(rv$dataset_filename, {
+      fn <- rv$dataset_filename
+      if (is.null(fn) || !nzchar(trimws(fn))) return(invisible(NULL))
+      root_guess <- tools::file_path_sans_ext(basename(trimws(fn)))
+      cur <- trimws(input$ibd_out_root %||% "")
+      if (!nzchar(cur) || identical(cur, last_auto_root_ibd())) {
+        updateTextInput(session, "ibd_out_root", value = root_guess)
+        last_auto_root_ibd(root_guess)
+      }
+    }, ignoreInit = FALSE, ignoreNULL = TRUE)
+
+    ibd_out_root_r   <- reactive({ r <- trimws(input$ibd_out_root %||% ""); if (nzchar(r)) r else "SPG_" })
+    ibd_out_suffix_r <- reactive({ trimws(input$ibd_out_suffix %||% "") })
+    ibd_out_filename <- function(desc) {
+      suf <- ibd_out_suffix_r()
+      paste0(ibd_out_root_r(), "-", desc, if (nzchar(suf)) paste0("-", suf) else "", ".txt")
+    }
 
     # ── Population GPS centroids (needed for D_geo; IBD-specific) ───────────
     coords_r <- reactive({
@@ -144,6 +179,82 @@ server_isolation_by_distance <- function(id, rv) {
     .linearise <- function(x) { x <- pmin(pmax(x, 0), 0.9999); x / (1 - x) }
 
     full_pair_table_r <- reactive({
+      if (isTRUE(identical(input$ibd_source, "external"))) {
+        full_pair_table_external_r()
+      } else {
+        full_pair_table_internal_r()
+      }
+    })
+
+    # ── EXTERNAL SOURCE: re-load a previously exported (and freely edited)
+    #    pairwise file — e.g. the "pairwise_long_format" file exported by the
+    #    Null Alleles module, or that same file hand-edited by the operator
+    #    (rows removed, values corrected, extra columns added). This makes
+    #    the IBD module fully standalone: it never has to touch the Null
+    #    Alleles module in the same session. Column names matching the
+    #    Null Alleles export (FST_raw, FST_ENA, DCSE_raw, DCSE_INA, their
+    #    _lo/_hi CI bounds, FR/FR_raw + CI, Dgeo_m, lnDgeo) are used
+    #    directly when present; anything missing is derived when possible
+    #    (FR from FST via Rousset's linearisation, lnDgeo from Dgeo_m) or
+    #    left NA otherwise (e.g. GPS-based Dgeo_m is only available in
+    #    "internal" mode, since it depends on this session's imported data).
+    full_pair_table_external_r <- reactive({
+      shiny::req(input$ibd_ext_file)
+      ext <- .mt_read_file(input$ibd_ext_file, input$ibd_ext_sep, input$ibd_ext_header)
+      nm <- names(ext)
+      pop1_col <- .guess_col(nm, c("^Pop1$", "^Farm1$", "^ID1$"), nm[1])
+      pop2_col <- .guess_col(nm, c("^Pop2$", "^Farm2$", "^ID2$"), nm[2])
+      shiny::validate(shiny::need(!identical(pop1_col, pop2_col),
+        "Could not identify two distinct Pop1/Pop2 columns in the uploaded file."))
+
+      df <- data.frame(Pop1 = as.character(ext[[pop1_col]]),
+                        Pop2 = as.character(ext[[pop2_col]]),
+                        stringsAsFactors = FALSE)
+
+      num_col <- function(pats) {
+        c <- .guess_col(nm, pats, NA_character_)
+        if (is.na(c) || !(c %in% nm)) rep(NA_real_, nrow(ext))
+        else suppressWarnings(as.numeric(ext[[c]]))
+      }
+      df$FST_raw     <- num_col(c("^FST_raw$"))
+      df$FST_ENA     <- num_col(c("^FST_ENA$"))
+      df$FST_raw_lo  <- num_col(c("^FST_raw_CI_lo_loci$", "^FST_raw_lo$"))
+      df$FST_raw_hi  <- num_col(c("^FST_raw_CI_hi_loci$", "^FST_raw_hi$"))
+      df$FST_ENA_lo  <- num_col(c("^FST_ENA_CI_lo_loci$", "^FST_ENA_lo$"))
+      df$FST_ENA_hi  <- num_col(c("^FST_ENA_CI_hi_loci$", "^FST_ENA_hi$"))
+      df$DCSE_raw    <- num_col(c("^DCSE_raw$"))
+      df$DCSE_INA    <- num_col(c("^DCSE_INA$"))
+      df$DCSE_raw_lo <- num_col(c("^DCSE_raw_CI_lo_loci$", "^DCSE_raw_lo$"))
+      df$DCSE_raw_hi <- num_col(c("^DCSE_raw_CI_hi_loci$", "^DCSE_raw_hi$"))
+      df$DCSE_INA_lo <- num_col(c("^DCSE_INA_CI_lo_loci$", "^DCSE_INA_lo$"))
+      df$DCSE_INA_hi <- num_col(c("^DCSE_INA_CI_hi_loci$", "^DCSE_INA_hi$"))
+
+      # FR (Rousset's linearised FST): use the file's own FR columns if
+      # present, else derive them from FST_raw/FST_ENA (+ CI).
+      fr_col <- function(pats, fallback_from) {
+        c <- .guess_col(nm, pats, NA_character_)
+        if (!is.na(c) && c %in% nm) suppressWarnings(as.numeric(ext[[c]]))
+        else .linearise(fallback_from)
+      }
+      df$FR        <- fr_col(c("^FR$"),        df$FST_ENA)
+      df$FR_lo     <- fr_col(c("^FR_lo$"),     df$FST_ENA_lo)
+      df$FR_hi     <- fr_col(c("^FR_hi$"),     df$FST_ENA_hi)
+      df$FR_raw    <- fr_col(c("^FR_raw$"),    df$FST_raw)
+      df$FR_raw_lo <- fr_col(c("^FR_raw_lo$"), df$FST_raw_lo)
+      df$FR_raw_hi <- fr_col(c("^FR_raw_hi$"), df$FST_raw_hi)
+
+      df$Dgeo_m <- num_col(c("^Dgeo_m$", "^D_geo$", "^Distance$"))
+      lnd <- num_col(c("^lnDgeo$", "^ln\\(D_geo\\)$"))
+      df$lnDgeo <- ifelse(is.finite(lnd), lnd,
+                           ifelse(is.finite(df$Dgeo_m) & df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_))
+      df
+    })
+
+    # ── INTERNAL SOURCE (default): built entirely from the Null Alleles
+    #    module's results shared via rv$null_alleles_results.
+    #    Matches the reference layout exactly:
+    #    Pop1, Pop2, D_geo, FST-FreeNA(+CI), ln(D_geo), F_R(+CI), D_CSE-INA, D_CSE
+    full_pair_table_internal_r <- reactive({
       na <- na_results_r()
       fst_long <- na$fst_pair$long                     # Pop1,Pop2,FST_raw,FST_ENA
       dc_long  <- na$dc_pair$long                       # Pop1,Pop2,DCSE_raw,DCSE_INA
@@ -236,6 +347,7 @@ server_isolation_by_distance <- function(id, rv) {
       df
     })
 
+
     # ══════════════════════════════════════════════════════════════════════
     #  TAB 1 — Isolation by Distance (Rousset 1997)  [now the FIRST tab]
     # ══════════════════════════════════════════════════════════════════════
@@ -316,9 +428,28 @@ server_isolation_by_distance <- function(id, rv) {
         DT::formatRound(c("D_geo","FST-FreeNA","FST-FreeNA-i","FST-FreeNA-s",
                            "ln(D_geo)","F_R","F_R-i","F_R-s","D_CSE-INA","D_CSE"), 6)
     })
-    output$dl_ibd_csv <- downloadHandler(
-      filename = function() paste0("IBD_pairwise_", Sys.Date(), ".csv"),
-      content  = function(file) write.csv(ibd_results_r()$df, file, row.names = FALSE)
+    output$dl_ibd_txt <- downloadHandler(
+      filename = function() ibd_out_filename("regression"),
+      content  = function(file) {
+        r <- ibd_results_r()
+        s <- as.data.frame(r$summary, stringsAsFactors = FALSE)
+        hdr <- c(
+          "Isolation by Distance \u2014 Rousset (1997) regression",
+          sprintf("Habitat model: %s", if (r$use_log) "2D (F_R ~ ln(D_geo))" else "1D (F_R ~ D_geo)"),
+          sprintf("Genetic distance metric: %s", if (identical(r$metric, "raw")) "F_R (raw FST)" else "F_R (FST-ENA)"),
+          sprintf("Data source: %s", if (isTRUE(identical(input$ibd_source, "external"))) "external re-loaded pairwise file" else "Null Alleles module (this session)"),
+          sprintf("Slope (b) / Nb / Nem \u2014 average: b=%.6f Nb=%.6f Nem=%.6f",
+                   r$reg_avg$slope, 1/r$reg_avg$slope, (1/r$reg_avg$slope)/(2*pi)),
+          ""
+        )
+        con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
+        writeLines(hdr, con = con, useBytes = TRUE)
+        writeLines("Regression summary (slope / b / Nb / Nem for average and CI bounds):", con = con)
+        write.table(s, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+        writeLines("", con = con)
+        writeLines("Full pairwise table:", con = con)
+        write.table(r$df, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+      }
     )
 
     # Regression summary: slope (b) / Nb / Nem for the 3 fitted lines
@@ -426,7 +557,9 @@ server_isolation_by_distance <- function(id, rv) {
       stat_fn <- function(xx, yy) {
         ok <- is.finite(xx) & is.finite(yy)
         if (sum(ok) < 3L) return(NA_real_)
-        if (stat == "b") unname(coef(lm(yy[ok] ~ xx[ok]))[2L]) else suppressWarnings(cor(xx[ok], yy[ok]))
+        if (stat == "b") unname(coef(lm(yy[ok] ~ xx[ok]))[2L])
+        else if (stat == "spearman") suppressWarnings(cor(xx[ok], yy[ok], method = "spearman"))
+        else suppressWarnings(cor(xx[ok], yy[ok]))
       }
       ok_obs   <- is.finite(x_all) & is.finite(y_all)
       stat_obs <- stat_fn(x_all, y_all)
@@ -555,7 +688,7 @@ server_isolation_by_distance <- function(id, rv) {
       })
       res$x_label <- paste0(xcol, if (isTRUE(input$mt_log_x)) " (ln)" else "")
       res$y_label <- ycol
-      res$stat_label <- if (stat == "b") "Slope b" else "Pearson r"
+      res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
       res
     })
 
@@ -631,6 +764,161 @@ server_isolation_by_distance <- function(id, rv) {
         r <- mantel_result_r()
         write.csv(data.frame(X = r$x, Y = r$y), file, row.names = FALSE)
       }
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  TAB 3 — Partial Mantel test for MORE THAN 2-3 matrices, i.e. multiple
+    #  regression on distance matrices (MRM; Legendre, Lapointe & Casgrain
+    #  1994; Lichstein 2007), the standard generalisation of the classic
+    #  2-3-matrix partial Mantel test to up to 10 predictor matrices at once
+    #  (Fstat 2.9.4 convention). Base R packages (ade4, vegan, ecodist) cap
+    #  partial Mantel at 2-3 matrices and Pearson/Spearman/Kendall only.
+    #  Reuses the SAME data source, column pickers and rectangular-matrix
+    #  handling (joint row/column relabelling, valid on incomplete pairwise
+    #  data) as the simple Mantel test above (Tab 2).
+    #
+    #  CAVEAT the module's info panel also states: Guillot & Rousset (2013)
+    #  and Crabot et al. (2019, Methods Ecol Evol 10:532-540) showed that
+    #  classic partial Mantel tests have inflated type I error when the
+    #  matrices being partialled out (e.g. geographic distance) are
+    #  themselves spatially autocorrelated — a limitation this MRM
+    #  generalisation inherits, since it relies on the same joint-relabelling
+    #  permutation scheme. Borcard & Legendre (2012, Ecology 93:1473-1481)
+    #  found the plain (non-partial) Mantel test has acceptable power for
+    #  most ecological applications, so a simple Mantel per predictor (Tab 2)
+    #  remains a reasonable cross-check. Lisboa et al. (2014, PLoS ONE
+    #  9(6):e101238) proposed the Procrustes association metric (PAM) as a
+    #  less-controversial, more powerful alternative to partial Mantel;
+    #  PAM is NOT implemented here but is flagged as a natural next step.
+    # ══════════════════════════════════════════════════════════════════════
+
+    output$pm_col_y_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("pm_col_y"), "Response (Y):", choices = cols,
+                  selected = .guess_col(cols, c("^FR$", "^FST_ENA$", "^DCSE_INA$"),
+                                        if (length(cols)) cols[1] else NULL))
+    })
+    output$pm_col_x_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      cols <- setdiff(cols, input$pm_col_y %||% "")
+      selectInput(session$ns("pm_col_x"), "Predictors (X1\u2026X10) \u2014 pick up to 10:",
+                  choices = cols, selected = NULL, multiple = TRUE)
+    })
+
+    .pm_std <- function(v) {
+      s <- stats::sd(v, na.rm = TRUE)
+      if (!is.finite(s) || s == 0) v - mean(v, na.rm = TRUE) else (v - mean(v, na.rm = TRUE)) / s
+    }
+
+    partial_mantel_result_r <- eventReactive(input$run_partial_mantel, {
+      df <- mt_base_df_r()
+      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      ycol <- input$pm_col_y; xcols <- input$pm_col_x
+
+      shiny::validate(
+        shiny::need(length(xcols) >= 1L, "Choose at least one predictor matrix."),
+        shiny::need(length(xcols) <= 10L, "Up to 10 predictor matrices are supported (Fstat convention)."),
+        shiny::need(!(ycol %in% xcols), "Y cannot also be used as a predictor."),
+        shiny::need(all(c(p1c, p2c, ycol, xcols) %in% names(df)), "Selected columns not found.")
+      )
+
+      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
+      build <- function(valcol) {
+        tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]),
+                           V = suppressWarnings(as.numeric(df[[valcol]])))
+        .mt_build_square(tmp, "P1", "P2", "V", all_labels)
+      }
+      mat_y  <- build(ycol)
+      mats_x <- stats::setNames(lapply(xcols, build), xcols)
+
+      common <- Reduce(intersect, c(list(rownames(mat_y)), lapply(mats_x, rownames)))
+      shiny::validate(shiny::need(length(common) >= 4L,
+        "Not enough sub-samples shared by Y and all predictor matrices."))
+
+      n <- length(common)
+      lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+      mat_y_c <- mat_y[common, common, drop = FALSE]
+      y_all   <- mat_y_c[lower_idx]
+      x_all   <- lapply(mats_x, function(m) m[common, common, drop = FALSE][lower_idx])
+
+      compute_ok <- function(yv) { ok <- is.finite(yv); for (xv in x_all) ok <- ok & is.finite(xv); ok }
+      ok0 <- compute_ok(y_all)
+      shiny::validate(shiny::need(sum(ok0) >= (length(xcols) + 3L),
+        "Too few dyads with complete data across Y and all predictors for this many predictors."))
+
+      n_perm   <- as.integer(input$pm_n_perm)
+      use_std  <- isTRUE(input$pm_standardize)
+
+      fit_once <- function(yv) {
+        okk <- compute_ok(yv)
+        if (sum(okk) < (length(xcols) + 3L)) return(NULL)
+        d <- as.data.frame(x_all)[okk, , drop = FALSE]; names(d) <- xcols
+        d$Y <- yv[okk]
+        if (use_std) { d$Y <- .pm_std(d$Y); for (nmc in xcols) d[[nmc]] <- .pm_std(d[[nmc]]) }
+        m <- tryCatch(lm(Y ~ ., data = d), error = function(e) NULL)
+        if (is.null(m)) return(NULL)
+        list(coef = coef(m)[-1L], r2 = summary(m)$r.squared)
+      }
+
+      obs <- fit_once(y_all)
+      shiny::validate(shiny::need(!is.null(obs), "Could not fit the model (check for collinear predictors)."))
+
+      withProgress(message = "Running partial Mantel (MRM)\u2026", value = 0.1, {
+        perm_coef <- matrix(NA_real_, n_perm, length(xcols), dimnames = list(NULL, xcols))
+        perm_r2   <- numeric(n_perm)
+        report_every <- max(1L, round(n_perm / 20))
+        for (b in seq_len(n_perm)) {
+          perm <- sample.int(n)
+          y_p <- mat_y_c[perm, perm, drop = FALSE][lower_idx]
+          fp  <- fit_once(y_p)
+          if (!is.null(fp)) { perm_coef[b, ] <- fp$coef[xcols]; perm_r2[b] <- fp$r2 }
+          if (b %% report_every == 0L) setProgress(0.1 + 0.85 * b / n_perm)
+        }
+      })
+
+      tbl <- do.call(rbind, lapply(xcols, function(nmc) {
+        pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
+        b_obs   <- unname(obs$coef[nmc])
+        m_valid <- length(pc)
+        p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
+        p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
+        data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
+                   stringsAsFactors = FALSE)
+      }))
+
+      r2v  <- perm_r2[is.finite(perm_r2)]
+      p_r2 <- if (length(r2v) > 0L) (sum(r2v >= obs$r2) + 1) / (length(r2v) + 1) else NA_real_
+
+      list(table = tbl, r2 = obs$r2, p_r2 = p_r2, n_dyads = sum(ok0), n_pops = n,
+           standardized = use_std, y_label = ycol, x_labels = xcols)
+    })
+
+    output$dt_partial_mantel <- DT::renderDT({
+      r <- partial_mantel_result_r()
+      d <- r$table
+      names(d) <- c("Predictor", if (r$standardized) "Standardized coef." else "Coefficient",
+                     "p (positive assoc.)", "p (negative assoc.)")
+      DT::datatable(d, rownames = FALSE,
+        options = list(dom = "t", pageLength = 10, ordering = FALSE),
+        class = "compact stripe hover") |>
+        DT::formatRound(names(d)[2:4], 4)
+    })
+
+    output$ui_partial_mantel_summary <- renderUI({
+      r <- partial_mantel_result_r()
+      tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
+        sprintf("Full model: R\u00b2 = %.4f, p = %s (permutation test on R\u00b2)",
+                r$r2, if (is.na(r$p_r2)) "NA" else formatC(r$p_r2, format = "f", digits = 4)), tags$br(),
+        sprintf("Dyads used: %d \u2014 sub-samples in common: %d", r$n_dyads, r$n_pops), tags$br(),
+        sprintf("Response: %s \u2014 Predictors: %s", r$y_label, paste(r$x_labels, collapse = ", "))
+      )
+    })
+
+    output$dl_partial_mantel_csv <- downloadHandler(
+      filename = function() paste0("partial_mantel_", Sys.Date(), ".csv"),
+      content  = function(file) write.csv(partial_mantel_result_r()$table, file, row.names = FALSE)
     )
 
   })
