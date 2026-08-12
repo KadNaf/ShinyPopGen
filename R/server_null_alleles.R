@@ -1325,7 +1325,7 @@ server_null_alleles <- function(id, rv) {
     #    the confusing "R installation" entry) and much clearer wording about
     #    what "this computer" means, since this app is normally run locally.
     
-    volumes_r <- c(Home = path.expand("~"))
+    volumes_r <- c(Home = path.expand("~"), "R installation" = R.home(), shinyFiles::getVolumes()())
     shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
 
     out_dir_r <- reactive({
