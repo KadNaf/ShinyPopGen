@@ -171,7 +171,7 @@ null_alleles_UI <- function(id) {
               tags$div(style = "flex:1;",
                 textInput(ns("out_dir_display"), "Save files to this folder (optional):",
                           value = "", placeholder = "(not set \u2014 use the .txt buttons below instead)")),
-              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse\u2026", "Choose a folder on this computer",
+              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
                                           class = "btn-action-secondary", style = "margin-bottom:15px;"))),
           column(6,
             textInput(ns("out_root"), "Root for the name of output files:",

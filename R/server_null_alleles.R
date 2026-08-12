@@ -1324,7 +1324,10 @@ server_null_alleles <- function(id, rv) {
     #    Simplified vs. the previous version: a single "Home" root (dropped
     #    the confusing "R installation" entry) and much clearer wording about
     #    what "this computer" means, since this app is normally run locally.
-    volumes_r <- c(Home = path.expand("~"))
+
+    # ── Save all files automatically to the chosen output folder ──────────────
+
+    volumes_r <- c(Home = path.expand("~"),  "C:" = "C:/")
     shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
 
     out_dir_r <- reactive({
