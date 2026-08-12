@@ -1245,7 +1245,7 @@ app_ui <- function() {
     ),
     bslib::nav_panel(
       title = HTML('IBD'),
-      icon  = shiny::icon("map-marker-alt"),
+      icon  = shiny::icon("atom"),
       value = "isolation_by_distance",
       isolation_by_distance_UI("ibd")
     ),

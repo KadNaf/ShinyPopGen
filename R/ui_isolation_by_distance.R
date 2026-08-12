@@ -41,7 +41,7 @@ isolation_by_distance_UI <- function(id) {
       box(
         width = 12, solidHeader = TRUE, status = "primary",
         title = div(style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-                    icon("chart-bar"), " Summary (from Null Alleles module)"),
+                    icon("chart-bar"), " Summary "),
         fluidRow(
           column(3, valueBoxOutput(ns("box_nloci"),  width = NULL)),
           column(3, valueBoxOutput(ns("box_npops"),  width = NULL)),
@@ -80,7 +80,8 @@ isolation_by_distance_UI <- function(id) {
               radioButtons(ns("ibd_ext_sep"), "Separator:",
                 choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
                 selected = "\t", inline = TRUE),
-              checkboxInput(ns("ibd_ext_header"), "File has header row", value = TRUE)
+              checkboxInput(ns("ibd_ext_header"), "File has header row", value = TRUE),
+              uiOutput(ns("ibd_ext_file_status"))
             ),
             tags$hr(),
             radioButtons(ns("ibd_model"), "Habitat model:",
@@ -111,6 +112,7 @@ isolation_by_distance_UI <- function(id) {
                   choices = c("Comma" = ",", "Tab" = "\t", "Semicolon" = ";"),
                   selected = ",", inline = TRUE),
                 checkboxInput(ns("ibd_dgeo_header"), "File has header row", value = TRUE),
+                uiOutput(ns("ibd_dgeo_file_status")),
                 tags$p(style = "color:#777;font-size:11px;",
                   "Only pairs present in the file are used; pairs you deleted from the file are excluded from the analysis.")
               ),
@@ -154,14 +156,6 @@ isolation_by_distance_UI <- function(id) {
             tags$br(),
             downloadButton(ns("dl_ibd_txt"), "Download full table + regression summary (.txt)", class = "btn-action-secondary btn-sm")
           )
-        ),
-
-        fluidRow(
-          box(width = 12, solidHeader = FALSE,
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-area"), " IBD plot"),
-            plotly::plotlyOutput(ns("ibd_plot"), height = "440px")
-          )
         )
       ),
 
@@ -183,7 +177,13 @@ isolation_by_distance_UI <- function(id) {
             "valid when either matrix is incomplete. Statistic: Pearson's r or Spearman's rho ",
             "(Fstat convention) or the slope of the Rousset (1997) regression (Genepop convention ",
             "for IBD). ",
-            "One-sided p-value = (b+1)/(m+1), b = number of permuted statistics \u2265 observed."
+            "One-sided p-value = (b+1)/(m+1), b = number of permuted statistics \u2265 observed.",
+            "<br><b>If your numbers don't match Fstat:</b> Fstat's own Isolation-by-Distance Mantel test ",
+            "uses the regression <b>slope b</b> (not Pearson r) of <b>F_R = FST/(1-FST)</b> against ",
+            "<b>ln(distance)</b> (2D habitat) or raw distance (1D) \u2014 make sure you selected ",
+            "\"Regression slope (Rousset)\", picked <code>FR</code>/<code>FR_raw</code> as Y, and ticked ",
+            "\"ln(transform) X\" if comparing to a 2D Fstat run. Also check the Exclude-pairs field is empty ",
+            "if Fstat used every pair."
           ))
         ),
 
@@ -204,7 +204,8 @@ isolation_by_distance_UI <- function(id) {
               radioButtons(ns("mt_sep"), "Separator:",
                 choices = c("Comma"=",", "Tab"="\t", "Semicolon"=";"),
                 selected = ",", inline = TRUE),
-              checkboxInput(ns("mt_header"), "File has header row", value = TRUE)
+              checkboxInput(ns("mt_header"), "File has header row", value = TRUE),
+              uiOutput(ns("mt_file_status"))
             ),
 
             conditionalPanel(
@@ -219,7 +220,8 @@ isolation_by_distance_UI <- function(id) {
                 radioButtons(ns("mt_extra_sep"), "Separator:",
                   choices = c("Comma"=",", "Tab"="\t", "Semicolon"=";"),
                   selected = ",", inline = TRUE),
-                checkboxInput(ns("mt_extra_header"), "File has header row", value = TRUE)
+                checkboxInput(ns("mt_extra_header"), "File has header row", value = TRUE),
+                uiOutput(ns("mt_extra_file_status"))
               )
             ),
 
@@ -268,13 +270,16 @@ isolation_by_distance_UI <- function(id) {
         fluidRow(
           box(width = 6, solidHeader = FALSE,
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-line"), " Scatter plot"),
-            plotly::plotlyOutput(ns("mantel_scatter"), height = "360px")
+                          icon("table"), " Result summary"),
+            DT::DTOutput(ns("dt_mantel_summary"))
           ),
           box(width = 6, solidHeader = FALSE,
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-area"), " Permutation distribution"),
-            plotly::plotlyOutput(ns("mantel_hist"), height = "360px")
+                          icon("table"), " Null distribution quantiles (permutations)"),
+            DT::DTOutput(ns("dt_mantel_quantiles")),
+            tags$p(style="color:#777;font-size:11px;margin-top:6px;",
+              "Same style of output as Fstat's permutation table: the observed statistic can be ",
+              "compared directly against these percentile thresholds of the permuted null distribution.")
           )
         ),
 
@@ -311,7 +316,13 @@ isolation_by_distance_UI <- function(id) {
             "and, in the future, the Procrustes association metric (Lisboa et al. 2014, ",
             "<i>PLoS ONE</i> 9(6):e101238) as a less-controversial alternative, are worth cross-checking ",
             "any result against. Borcard &amp; Legendre (2012, <i>Ecology</i> 93:1473\u20131481) found the ",
-            "plain Mantel test itself has acceptable power for most ecological uses."
+            "plain Mantel test itself has acceptable power for most ecological uses.",
+            "<br><b>If your numbers don't match Fstat:</b> this is expected to some degree \u2014 Fstat's own ",
+            "partial Mantel does not use the same algorithm as this tab (MRM, a joint multiple regression ",
+            "across all matrices at once). Coefficients are reported in <b>raw units by default</b> ",
+            "(untick \"Standardize\" is the default) to stay comparable to Fstat's own output; check the ",
+            "correlation matrix below \u2014 if two predictors are highly correlated, no algorithm's individual ",
+            "coefficients for them will be directly comparable across methods."
           ))
         ),
 
@@ -322,8 +333,11 @@ isolation_by_distance_UI <- function(id) {
             uiOutput(ns("pm_col_y_ui")),
             uiOutput(ns("pm_col_x_ui")),
             tags$hr(),
-            checkboxInput(ns("pm_standardize"), "Standardize (z-score) all variables before fitting",
-                          value = TRUE),
+            checkboxInput(ns("pm_standardize"), "Standardize (z-score) variables before fitting",
+                          value = FALSE),
+            tags$p(style="color:#777;font-size:11px;",
+              "Off by default so coefficients are in the same raw units Fstat reports. Turn on only if ",
+              "you want to compare the relative strength of predictors measured in different units."),
             numericInput(ns("pm_n_perm"), "Permutations:", value = 999, min = 99, max = 20000, step = 100),
             tags$p(style="color:#777;font-size:11px;",
               "Permutation is by joint row/column relabelling of the response (Y) matrix, keeping all ",
@@ -338,159 +352,15 @@ isolation_by_distance_UI <- function(id) {
             DT::DTOutput(ns("dt_partial_mantel")),
             uiOutput(ns("ui_partial_mantel_summary")),
             tags$br(),
-            downloadButton(ns("dl_partial_mantel_csv"), "Download results (CSV)", class = "btn-action-secondary btn-sm")
-          )
-        )
-      ),
-
-      # ══════════════════════════════════════════════════════════════════
-      # TAB 4 — Procrustes analysis & PAM (Lisboa et al. 2014)
-      # ══════════════════════════════════════════════════════════════════
-      tabPanel(title = tagList(icon("shapes"), " Procrustes / PAM"), value = "tab_pam",
-        br(),
-
-        tags$div(
-          class = "spg-method-note", style = "border-left-color:#B45309;",
-          HTML(paste0(
-            "Procrustes analysis and the <b>Procrustean Association Metric (PAM)</b> \u2014 ",
-            "Lisboa, Peres-Neto, Chaer, Jesus, Mitchell, Chapman &amp; Berbara (2014, <i>PLoS ONE</i> ",
-            "9(6):e101238) \u2014 a less-controversial, more powerful alternative to (partial) Mantel tests. ",
-            "Instead of comparing pairwise distance matrices directly, each of the two chosen matrices ",
-            "is first ordinated (PCoA) into a configuration of populations in k-dimensional space; the two ",
-            "configurations are then superimposed (Procrustes rotation) and compared with a global ",
-            "significance test (<b>PROTEST</b>) <i>and</i> a <b>per-population residual (PAM)</b> \u2014 ",
-            "showing which specific populations drive an overall (mis)match, something the Mantel tests ",
-            "above cannot do. The PAM vector can itself be used as a response variable in a follow-up ",
-            "regression or ANOVA (e.g. against herd management, host breed, or other covariates), as ",
-            "illustrated in the paper.",
-            "<br><b>Note:</b> unlike the Mantel tests, Procrustes/PAM needs a <b>complete</b> square ",
-            "matrix \u2014 populations with any missing pairwise value are dropped automatically (reported ",
-            "below), rather than silently tolerated as in the rectangular-safe Mantel tests."
-          ))
-        ),
-
-        fluidRow(
-          box(width = 4, solidHeader = TRUE, status = "primary",
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("database"), " Matrices (from the Mantel Test tab's data source)"),
-            uiOutput(ns("pam_col_x_ui")),
-            uiOutput(ns("pam_col_y_ui")),
+            downloadButton(ns("dl_partial_mantel_csv"), "Download results (CSV)", class = "btn-action-secondary btn-sm"),
             tags$hr(),
-            numericInput(ns("pam_k"), "Number of PCoA axes (k):", value = 2, min = 1, max = 10, step = 1),
-            numericInput(ns("pam_n_perm"), "PROTEST permutations:", value = 999, min = 99, max = 20000, step = 100),
-            tags$p(style="color:#777;font-size:11px;",
-              "Both configurations are ordinated with the same number of axes (Lisboa et al. 2014, Fig. 2b) ",
-              "and rescaled to unit sum of squares before fitting, so m\u00b2 and r are comparable across pairs ",
-              "of variables."),
-            actionButton(ns("run_pam"), "Run Procrustes + PROTEST",
-                         icon = icon("rocket"), class = "btn-action-primary btn-block",
-                         style = "font-weight:bold;")
-          ),
-          box(width = 8, solidHeader = TRUE, status = "primary",
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-bar"), " Global fit (PROTEST)"),
-            fluidRow(
-              column(4, valueBoxOutput(ns("box_pam_r"),  width = NULL)),
-              column(4, valueBoxOutput(ns("box_pam_m2"), width = NULL)),
-              column(4, valueBoxOutput(ns("box_pam_p"),  width = NULL))
-            ),
-            valueBoxOutput(ns("box_pam_n"), width = 12)
-          )
-        ),
-
-        fluidRow(
-          box(width = 6, solidHeader = FALSE,
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("table"), " PAM per population"),
-            DT::DTOutput(ns("dt_pam")),
-            uiOutput(ns("ui_pam_interpretation")),
-            tags$br(),
-            downloadButton(ns("dl_pam_csv"), "Download PAM (CSV)", class = "btn-action-secondary btn-sm")
-          ),
-          box(width = 6, solidHeader = FALSE,
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-bar"), " PAM per population (bar chart)"),
-            plotly::plotlyOutput(ns("pam_plot"), height = "420px")
-          )
-        )
-      ),
-
-      # ══════════════════════════════════════════════════════════════════
-      # TAB 5 — Correlogram (Borcard & Legendre 2012) & MSR-Mantel (Crabot
-      # et al. 2019)
-      # ══════════════════════════════════════════════════════════════════
-      tabPanel(title = tagList(icon("wave-square"), " Correlogram / MSR-Mantel"), value = "tab_correlogram",
-        br(),
-
-        tags$div(
-          class = "spg-method-note", style = "border-left-color:#0c4a6e;",
-          HTML(paste0(
-            "Two complementary approaches to spatial autocorrelation, both reusing the Mantel Test ",
-            "tab's data source and Pop1/Pop2 columns \u2014 set those there first.<br>",
-            "<b>Mantel correlogram</b> (Borcard &amp; Legendre 2014, <i>Ecology</i> 93:1473\u20131481; ",
-            "Sokal 1986; Oden &amp; Sokal 1986): splits distance into classes and tests, class by class, ",
-            "whether the response matrix is more similar within than among that class \u2014 shows ",
-            "<b>at what spatial scale</b> the pattern occurs, which a single Mantel r cannot. Borcard &amp; ",
-            "Legendre found it has acceptable power for most ecological uses.<br>",
-            "<b>MSR-Mantel</b> (Wagner &amp; Dray 2015; Crabot, Clappe, Dray &amp; Datry 2019, ",
-            "<i>Methods Ecol Evol</i> 10:532\u2013540): corrects the classic Mantel test's inflated type I ",
-            "error when <b>both</b> matrices are spatially autocorrelated, by comparing the observed ",
-            "statistic to a null distribution built from spatially-constrained random replicates (rather ",
-            "than fully random permutations) of one matrix."
-          ))
-        ),
-
-        fluidRow(
-          box(width = 12, solidHeader = TRUE, status = "primary",
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-line"), " Mantel correlogram"),
-            fluidRow(
-              column(3, uiOutput(ns("corr_col_y_ui"))),
-              column(3, uiOutput(ns("corr_col_d_ui"))),
-              column(2, numericInput(ns("corr_n_classes"), "Distance classes:", value = 7, min = 2, max = 30, step = 1)),
-              column(2, numericInput(ns("corr_n_perm"), "Permutations:", value = 999, min = 99, max = 20000, step = 100)),
-              column(2, numericInput(ns("corr_alpha"), "Alpha:", value = 0.05, min = 0.001, max = 0.5, step = 0.01))
-            ),
-            actionButton(ns("run_correlogram"), "Run Mantel Correlogram",
-                         icon = icon("random"), class = "btn-action-primary",
-                         style = "font-weight:bold;"),
-            tags$hr(),
-            fluidRow(
-              column(6, DT::DTOutput(ns("dt_correlogram"))),
-              column(6, plotly::plotlyOutput(ns("correlogram_plot"), height = "380px"))
-            ),
-            tags$br(),
-            downloadButton(ns("dl_correlogram_csv"), "Download correlogram (CSV)", class = "btn-action-secondary btn-sm")
-          )
-        ),
-
-        fluidRow(
-          box(width = 4, solidHeader = TRUE, status = "primary",
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("map-marked-alt"), " MSR-Mantel parameters"),
-            uiOutput(ns("msr_col_x_ui")),
-            uiOutput(ns("msr_col_y_ui")),
-            uiOutput(ns("msr_col_w_ui")),
-            numericInput(ns("msr_k"), "PCoA axes for Matrix X (k):", value = 2, min = 1, max = 10, step = 1),
-            numericInput(ns("msr_n_perm"), "MSR replicates:", value = 99, min = 49, max = 999, step = 50),
-            tags$p(style="color:#777;font-size:11px;",
-              "W is a row-standardized inverse-distance matrix built from the chosen distance column ",
-              "(a simple default \u2014 see the module's info panel for caveats vs. graph-based W)."),
-            actionButton(ns("run_msr"), "Run MSR-Mantel",
-                         icon = icon("rocket"), class = "btn-action-primary btn-block",
-                         style = "font-weight:bold;")
-          ),
-          box(width = 8, solidHeader = TRUE, status = "primary",
-              title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("chart-bar"), " MSR-Mantel results"),
-            fluidRow(
-              column(4, valueBoxOutput(ns("box_msr_robs"), width = NULL)),
-              column(4, valueBoxOutput(ns("box_msr_corrected"), width = NULL)),
-              column(4, valueBoxOutput(ns("box_msr_p"), width = NULL))
-            ),
-            valueBoxOutput(ns("box_msr_n"), width = 12),
-            uiOutput(ns("ui_msr_summary")),
-            plotly::plotlyOutput(ns("msr_hist"), height = "320px")
+            tags$div(style="font-weight:600;color:#333a43;margin-bottom:6px;",
+                     "Correlation matrix among Y and all predictors (collinearity check)"),
+            DT::DTOutput(ns("dt_pm_corr")),
+            tags$p(style="color:#777;font-size:11px;margin-top:6px;",
+              "High correlations (|r| > ~0.7) between two predictors make their individual coefficients ",
+              "unstable/hard to interpret \u2014 check this table before trusting a single predictor's ",
+              "coefficient in the results above.")
           )
         )
       )

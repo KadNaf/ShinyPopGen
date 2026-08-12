@@ -1047,14 +1047,18 @@ server_null_alleles <- function(id, rv) {
       root_guess <- tools::file_path_sans_ext(basename(trimws(fn)))
       cur <- trimws(input$out_root %||% "")
       if (!nzchar(cur) || identical(cur, last_auto_root())) {
-        updateTextInput(session, "out_root", value = root_guess)
+        updateTextInput(session, "out_root", value = root_guess, placeholder = root_guess)
         last_auto_root(root_guess)
+      } else {
+        # User has typed their own root — still show the imported file's name
+        # as the greyed-out placeholder/fallback, instead of a generic hint.
+        updateTextInput(session, "out_root", placeholder = root_guess)
       }
     }, ignoreInit = FALSE, ignoreNULL = TRUE)
 
     out_root_r <- reactive({
       r <- trimws(input$out_root %||% "")
-      if (nzchar(r)) r else "SPG_"
+      if (nzchar(r)) r else if (nzchar(last_auto_root())) last_auto_root() else "SPG_"
     })
     out_suffix_r <- reactive({ trimws(input$out_suffix %||% "") })
 
@@ -1315,9 +1319,12 @@ server_null_alleles <- function(id, rv) {
           legend = list(x=0.02, y=0.98))
     })
 
-    # ── Save all files automatically to the chosen output folder ──────────────
-    volumes_r <- c(Home = path.expand("~"), "R installation" = R.home(),
-                    shinyFiles::getVolumes()())
+    # ── Save all files automatically to the chosen output folder (optional;
+    #    the .txt download buttons below always work regardless) ─────────────
+    #    Simplified vs. the previous version: a single "Home" root (dropped
+    #    the confusing "R installation" entry) and much clearer wording about
+    #    what "this computer" means, since this app is normally run locally.
+    volumes_r <- c(Home = path.expand("~"))
     shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
 
     out_dir_r <- reactive({
@@ -1409,7 +1416,7 @@ server_null_alleles <- function(id, rv) {
         sprintf(" %d loci \u00b7 %d populations \u00b7 %d loci-replicates \u00b7 %d sub-sample-replicates \u00b7 %s CI.",
                 length(r$markers), length(r$pops), r$nboot, r$nboot_subs %||% r$nboot, ci_pct),
         if (nzchar(dir)) sprintf(" 5 files saved to %s.", dir)
-        else " No output folder chosen \u2014 use the .txt buttons below to download each file."
+        else " Use the .txt buttons below each result to download the 5 output files."
       )
     })
 

@@ -34,7 +34,7 @@ null_alleles_UI <- function(id) {
     .na-locus-grid { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
     .na-locus-item {
       background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px;
-      padding:.5rem .8rem; min-width:180px; flex:1;
+      padding:.5rem .8rem; min-width:150px; flex:1;
     }
     .na-locus-item .control-label { display:none; } /* hide redundant label */
     .na-locus-name {
@@ -91,24 +91,28 @@ null_alleles_UI <- function(id) {
         "<ul style='margin:4px 0 0 16px;'>",
         "<li><b>Loci</b>, resampled with replacement across the whole locus set (multilocus estimates only).</li>",
         "<li><b>Sub-samples</b> (populations), resampled as whole blocks with replacement (multilocus and per-locus).</li>",
-        "</ul>",
-        "The results here are reused directly by the <b>Isolation by Distance</b> module \u2014 nothing is recomputed there."
+        "</ul>"
       ))
     ),
 
     # ════════════════════════════════════════════════════════════════════
     # SUMMARY — value boxes
     # ════════════════════════════════════════════════════════════════════
-    fluidRow(
-      column(4, valueBoxOutput(ns("vb_loci"),  width = NULL)),
-      column(4, valueBoxOutput(ns("vb_pops"),  width = NULL)),
-      column(4, valueBoxOutput(ns("vb_n"),     width = NULL))
-    ),
-    fluidRow(
-      column(4, valueBoxOutput(ns("vb_avg_null"), width = NULL)),
-      column(4, valueBoxOutput(ns("vb_max_null"), width = NULL)),
-      column(4, valueBoxOutput(ns("vb_fst_ena"),  width = NULL))
-    ),
+    # fluidRow(
+    #   box(
+    #     width = 12, solidHeader = TRUE, status = "primary",
+    #     title = div(style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+    #                 icon("chart-bar"), " Summary "),
+    #     fluidRow(
+    #       column(2, valueBoxOutput(ns("vb_loci"),  width = NULL)),
+    #       column(2, valueBoxOutput(ns("vb_pops"),  width = NULL)),
+    #       column(2, valueBoxOutput(ns("vb_n"),     width = NULL)),
+    #       column(2, valueBoxOutput(ns("vb_avg_null"), width = NULL)),
+    #       column(2, valueBoxOutput(ns("vb_max_null"), width = NULL)),
+    #       column(2, valueBoxOutput(ns("vb_fst_ena"),  width = NULL))
+    #     )
+    #   )
+    # ),
 
     # ════════════════════════════════════════════════════════════════════
     # SETUP
@@ -165,21 +169,26 @@ null_alleles_UI <- function(id) {
           column(6,
             tags$div(style = "display:flex; align-items:flex-end; gap:8px;",
               tags$div(style = "flex:1;",
-                textInput(ns("out_dir_display"), "Please choose a folder for output files:",
-                          value = "", placeholder = "(no folder chosen \u2014 files download to your browser instead)")),
-              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
+                textInput(ns("out_dir_display"), "Save files to this folder (optional):",
+                          value = "", placeholder = "(not set \u2014 use the .txt buttons below instead)")),
+              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse\u2026", "Choose a folder on this computer",
                                           class = "btn-action-secondary", style = "margin-bottom:15px;"))),
           column(6,
             textInput(ns("out_root"), "Root for the name of output files:",
                       value = "", placeholder = "auto-filled from the imported data file name"))
         ),
         tags$p(style = "color:#666;font-size:12px;",
+          icon("info-circle"), " ", tags$strong("Browse\u2026"), " opens a folder picker for ",
+          tags$strong("this computer"), " (the one running this app). Pick a folder and every file will ",
+          "be saved there automatically each time you click Compute \u2014 no need to click the .txt buttons ",
+          "one by one. Leave it empty to just use the .txt download buttons below each result instead."),
+        tags$p(style = "color:#666;font-size:12px;",
           "The root is proposed automatically from the name of the data file you imported ",
-          "(e.g. ", tags$code("BoophilusAdultsDataCattle"), "), and you can freely edit or extend it ",
-          "\u2014 e.g. add your own notes such as which loci were recoded to 999999. ",
-          "File names = root + description (e.g. ", tags$code("<root>null_allele_frequencies.txt"),
-          "). No date is added (already shown by the file explorer) \u2014 if you re-run with a ",
-          "different missing-data coding and want to keep both results, add your own suffix below."),
+          "and you can freely edit or extend it \u2014 e.g. add your own notes such as which loci ",
+          "were recoded to 999999. File names = root + description (e.g. ",
+          tags$code("<root>null_allele_frequencies.txt"), "). No date is added (already shown by your ",
+          "computer's file browser) \u2014 if you re-run with a different missing-data coding and want to ",
+          "keep both results, use the suffix field to tell them apart."),
         textInput(ns("out_suffix"), "Optional suffix to distinguish this run (e.g. \"1\"):", value = ""),
         tags$p(style = "color:#666;font-size:12px;",
           "Files are saved as tab-delimited ", tags$strong(".txt"), " (not .csv)."),
