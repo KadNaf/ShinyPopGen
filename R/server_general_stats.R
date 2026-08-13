@@ -2242,7 +2242,7 @@ server_general_stats <- function(id, rv) {
       # ---------------------------#
       # 1b) Locus bootstrap (resample loci with replacement)
       # ---------------------------#
-      .bump_progress(25, "Bootstrap over loci (FSTAT/FreeNA-comparable)...")
+      .bump_progress(25, "Bootstrap over loci...")
       locus_comp <- wc84_locus_components_cpp(
         dat            = mat,
         pop_col_1based = 1L,
@@ -2824,7 +2824,7 @@ server_general_stats <- function(id, rv) {
 
       if (is.null(row) || nrow(row) == 0L || is.na(row$Observed[1])) {
         valueBox(value = "N/A", color = "red",
-                 subtitle = HTML("<small>FST (loci bootstrap)<br>FSTAT/FreeNA-comparable</small>"),
+                 subtitle = HTML("<small>FST (loci bootstrap)<br>loci resampled with replacement</small>"),
                  icon = icon("layer-group"), width = NULL)
       } else {
         ci_txt <- sprintf("[%.4f ; %.4f]", row$CI_L[1], row$CI_U[1])
@@ -2865,7 +2865,7 @@ server_general_stats <- function(id, rv) {
         spg_write_csv_with_header(
           lb[lb$Statistic %in% c("FST", "FIT", "FIS", "HS", "HT"), , drop = FALSE], file,
           .fst_export_header(
-            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (comparable to FSTAT and FreeNA)",
+            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (resampled with replacement)",
             extra = list("Bootstrap unit" = "loci (resampled with replacement across the whole locus set); rows = overall (multilocus) statistics, not per-locus")
           )
         )
@@ -2880,7 +2880,7 @@ server_general_stats <- function(id, rv) {
         spg_write_txt_with_header(
           lb[lb$Statistic %in% c("FST", "FIT", "FIS", "HS", "HT"), , drop = FALSE], file,
           .fst_export_header(
-            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (comparable to FSTAT and FreeNA)",
+            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (resampled with replacement)",
             extra = list("Bootstrap unit" = "loci (resampled with replacement across the whole locus set); rows = overall (multilocus) statistics, not per-locus")
           )
         )
@@ -3433,7 +3433,7 @@ server_general_stats <- function(id, rv) {
         loci            = if (!is.null(md)) md$loci_names   else NULL,
         n_perm          = if (!is.null(md)) md$n_permutations else NULL,
         n_boot          = if (!is.null(md)) md$n_bootstrap    else NULL,
-        resampling_unit = "Bootstrap over SUBSAMPLES: whole populations are resampled as blocks (individuals within a resampled population kept together), percentile CI. Permutation p-value: genotypes randomly reassigned among subsamples (one-sided test, FST >= observed). For the loci-based bootstrap comparable to FSTAT/FreeNA (loci resampled with replacement instead of subsamples), see the 'FST bootstrap over loci' table/export.",
+        resampling_unit = "Bootstrap over SUBSAMPLES: whole populations are resampled as blocks (individuals within a resampled population kept together), percentile CI. Permutation p-value: genotypes randomly reassigned among subsamples (one-sided test, FST >= observed). For the loci-based bootstrap (loci resampled with replacement instead of subsamples), see the 'FST bootstrap over loci' table/export.",
         extra           = extra
       )
     }
@@ -4028,7 +4028,7 @@ server_general_stats <- function(id, rv) {
         loci            = if (!is.null(md)) md$loci_names   else NULL,
         n_perm          = if (!is.null(md)) md$n_perm       else NULL,
         n_boot          = NULL,
-        resampling_unit = "Permutation of COMPLETE MULTILOCUS GENOTYPES (whole individuals) among subsamples \u2014 the valid scheme when Hardy-Weinberg is NOT assumed within samples (FSTAT / Goudet et al. 1996, section 7.1). Only individuals with a complete genotype at ALL loci simultaneously are used (N_geno column). Two one-sided p-values per locus: p(>= obs.) = (b+1)/(m+1) with b = #{G_perm >= G_obs}; p(> obs.) with b = #{G_perm > G_obs}. Overall row = G summed over loci (additive property), tested the same way.",
+        resampling_unit = "Permutation of COMPLETE MULTILOCUS GENOTYPES (whole individuals) among subsamples \u2014 the valid scheme when Hardy-Weinberg is NOT assumed within samples (Goudet et al. 1996, section 7.1). Only individuals with a complete genotype at ALL loci simultaneously are used (N_geno column). Two one-sided p-values per locus: p(>= obs.) = (b+1)/(m+1) with b = #{G_perm >= G_obs}; p(> obs.) with b = #{G_perm > G_obs}. Overall row = G summed over loci (additive property), tested the same way.",
         extra           = extra
       )
     }
