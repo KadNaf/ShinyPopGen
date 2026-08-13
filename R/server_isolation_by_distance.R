@@ -646,6 +646,17 @@ server_isolation_by_distance <- function(id, rv) {
         reactive(.mt_read_file(input$mt_extra_file, input$mt_extra_sep, input$mt_extra_header)))
     })
 
+    # Scale-adaptive formatting: fixed "%.6f" makes any statistic smaller
+    # than ~1e-6 (e.g. a Rousset slope against RAW-metre distances instead
+    # of ln-distance) collapse to the same visible value across many
+    # permutation quantiles, making the table look broken/identical when
+    # it isn't — this shows enough significant digits regardless of scale.
+    .fmt_stat <- function(x, digits = 6) {
+      if (!is.finite(x)) return("NA")
+      if (x != 0 && abs(x) < 10^(-(digits - 1))) formatC(x, format = "e", digits = digits - 1)
+      else formatC(x, format = "f", digits = digits)
+    }
+
     .guess_col <- function(cols, patterns, fallback) {
       for (pat in patterns) { hit <- grep(pat, cols, value = TRUE, ignore.case = TRUE); if (length(hit)) return(hit[1L]) }
       fallback
@@ -661,6 +672,29 @@ server_isolation_by_distance <- function(id, rv) {
       selectInput(session$ns("mt_col_pop2"), "Population 2 column:", choices = cols,
                   selected = .guess_col(cols, c("^Pop2$"), cols[min(2L, length(cols))]))
     })
+    # The 2D isolation-by-distance habitat model (Rousset 1997) regresses
+    # genetic distance on ln(geographic distance), not raw distance. If the
+    # chosen X column looks like a raw, un-logged distance (contains
+    # "dgeo"/"dist" but not "ln"/"log") and the ln-transform box isn't
+    # ticked, warn clearly — this single setting explains most real-world
+    # mismatches against other IBD tools (log vs raw distance changes
+    # Pearson r and the regression slope; Spearman rho is unaffected, since
+    # ranks are invariant to a monotone transform like ln()).
+    .raw_dist_warning <- function(xcol, log_checked) {
+      looks_raw <- !is.null(xcol) && nzchar(xcol) &&
+        grepl("dgeo|dist", xcol, ignore.case = TRUE) && !grepl("ln|log", xcol, ignore.case = TRUE)
+      if (looks_raw && !isTRUE(log_checked)) {
+        tags$p(style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:4px 6px;font-size:11px;margin-top:6px;",
+          icon("exclamation-triangle"), " ", tags$strong(xcol), " looks like a raw (un-logged) distance. ",
+          "The 2D isolation-by-distance habitat model regresses genetic distance on ", tags$strong("ln(distance)"),
+          ", not the raw value. Using the raw distance instead will give a different Pearson r / regression ",
+          "slope (Spearman rho is unaffected). Tick \"ln(transform) X\" below, or pick an already-logged ",
+          "column such as ", tags$code("lnDgeo"), ", if that is the model you intend to test.")
+      }
+    }
+    output$mt_double_log_warning <- renderUI(.raw_dist_warning(input$mt_col_x, input$mt_log_x))
+    output$gf_double_log_warning <- renderUI(.raw_dist_warning(input$gf_col_x, input$gf_log_x))
+
     output$mt_col_x_ui <- renderUI({
       df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
@@ -708,20 +742,56 @@ server_isolation_by_distance <- function(id, rv) {
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
       n_perm <- as.integer(input$mt_n_perm); stat <- input$mt_stat
-      withProgress(message = "Running Mantel test\u2026", value = 0.2, {
-        # BUGFIX: this used to be called as (m_y, m_x), which silently swapped
-        # X and Y internally — for the "b" (regression slope) statistic this
-        # produced the WRONG regression (distance regressed on genetic
-        # distance, instead of Rousset's genetic-distance-on-distance), and
-        # the scatter data/labels were mismatched too. This is almost
-        # certainly why slope-b results didn't match Fstat.
-        res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat,
-                                  p_formula = input$mt_p_formula %||% "plus1")
-        setProgress(1.0)
-      })
+      seed <- suppressWarnings(as.integer(input$mt_seed %||% 67144630))
+
+      # BUGFIX kept for reference: an earlier version of this reactive called
+      # .mt_mantel_matrix(m_y, m_x), which silently swapped X and Y internally
+      # — for the "b" (regression slope) statistic this produced the WRONG
+      # regression (distance regressed on genetic distance, instead of
+      # genetic-distance-on-distance), and the scatter data/labels were
+      # mismatched too. Always call with (m_x, m_y) in that order.
+      if (identical(input$mt_engine, "cpp")) {
+        # Native permutation loop for speed; RNG is R's own stream (seeded by
+        # set.seed() below), so results are reproducible and land on the same
+        # statistical footing as the R engine below (same corrected p-value
+        # formula, same test), just faster for large permutation counts.
+        mx_eng <- if (identical(stat, "spearman")) .rank_matrix(m_x) else m_x
+        my_eng <- if (identical(stat, "spearman")) .rank_matrix(m_y) else m_y
+        set.seed(seed)
+        withProgress(message = "Running Mantel test (C++ engine)\u2026", value = 0.3, {
+          cpp_res <- mantel_plus1_cpp(mx_eng, my_eng, n_perm)
+          setProgress(1.0)
+        })
+        n <- nrow(m_x)
+        lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+        x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
+        ok <- is.finite(x_all) & is.finite(y_all)
+        stat_obs <- if (stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
+                    else if (stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
+                    else suppressWarnings(cor(x_all[ok], y_all[ok]))
+        lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
+        pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
+        res <- list(
+          stat_obs = stat_obs, p_pos = cpp_res$p_pos, p_neg = cpp_res$p_neg,
+          n_pairs = cpp_res$n_pairs,
+          slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
+          intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
+          r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
+          x = x_all[ok], y = y_all[ok],
+          pop1 = rownames(m_x)[pair_idx[ok, "row"]], pop2 = rownames(m_x)[pair_idx[ok, "col"]],
+          common = rownames(m_x), perm_stats = as.numeric(cpp_res$perm_stats)
+        )
+      } else {
+        set.seed(seed)
+        withProgress(message = "Running Mantel test (R engine)\u2026", value = 0.2, {
+          res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plus1")
+          setProgress(1.0)
+        })
+      }
       res$x_label <- paste0(xcol, if (isTRUE(input$mt_log_x)) " (ln)" else "")
       res$y_label <- ycol
       res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
+      res$engine <- input$mt_engine %||% "r"
       res
     })
 
@@ -760,18 +830,19 @@ server_isolation_by_distance <- function(id, rv) {
     output$dt_mantel_summary <- DT::renderDT({
       r <- mantel_result_r()
       d <- data.frame(
-        Quantity = c("X variable", "Y variable", "Statistic", "Observed value",
+        Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2",
                      "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
-                     "Pairs used (n)", "Common populations (N)", "Permutations"),
-        Value = c(r$x_label, r$y_label, r$stat_label, sprintf("%.6f", r$stat_obs),
-                  sprintf("%.6f", r$slope), sprintf("%.6f", r$intercept),
+                     "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
+        Value = c(if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable)",
+                  r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
+                  .fmt_stat(r$slope), .fmt_stat(r$intercept),
                   sprintf("%.4f", r$r2),
-                  if (identical(input$mt_p_formula, "plain")) "b/m (Genepop/Fstat)" else "(b+1)/(m+1) (vegan/ade4)",
+                  "(b+1)/(m+1) \u2014 corrected proportion",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
-                  r$n_pairs, length(r$common), length(r$perm_stats)),
+                  r$n_pairs, length(r$common), length(r$perm_stats), input$mt_seed %||% 67144630),
         stringsAsFactors = FALSE
       )
       DT::datatable(d, rownames = FALSE,
@@ -786,10 +857,10 @@ server_isolation_by_distance <- function(id, rv) {
       q <- stats::quantile(r$perm_stats, probs = probs, na.rm = TRUE, type = 7)
       d <- data.frame(
         Percentile = paste0(probs * 100, "%"),
-        `Null value` = round(unname(q), 6),
+        `Null value` = vapply(unname(q), .fmt_stat, character(1L)),
         check.names = FALSE, stringsAsFactors = FALSE
       )
-      d <- rbind(d, data.frame(Percentile = "OBSERVED", `Null value` = round(r$stat_obs, 6), check.names = FALSE))
+      d <- rbind(d, data.frame(Percentile = "OBSERVED", `Null value` = .fmt_stat(r$stat_obs), check.names = FALSE))
       DT::datatable(d, rownames = FALSE,
         options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
         class = "compact stripe hover") |>
@@ -829,11 +900,24 @@ server_isolation_by_distance <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════
 
     gf_base_df_r <- reactive({
-      shiny::req(input$gf_file)
-      .mt_read_file(input$gf_file, input$gf_sep, input$gf_header)
+      if (identical(input$gf_source, "internal")) {
+        full_pair_table_r()
+      } else {
+        shiny::req(input$gf_file)
+        .mt_read_file(input$gf_file, input$gf_sep, input$gf_header)
+      }
     })
 
-    output$gf_file_status <- renderUI(.file_status_ui(input$gf_file, gf_base_df_r))
+    output$gf_file_status <- renderUI({
+      if (identical(input$gf_source, "internal")) {
+        r <- tryCatch(na_results_r(), error = function(e) NULL)
+        if (is.null(r)) return(tags$p(style="color:#999;font-size:11px;", icon("info-circle"),
+          " No Null Alleles results yet \u2014 run that module first, or switch to \"Upload a file\"."))
+        return(tags$p(style="color:#166534;font-size:11px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:4px 6px;",
+          icon("check-circle"), " Using Null Alleles results: ", tags$strong(sprintf("%d populations", length(r$pops)))))
+      }
+      .file_status_ui(input$gf_file, gf_base_df_r)
+    })
 
     output$gf_col_pop1_ui <- renderUI({
       cols <- tryCatch(names(gf_base_df_r()), error = function(e) character(0))
@@ -859,6 +943,25 @@ server_isolation_by_distance <- function(id, rv) {
                                         if (length(cols) >= 2L) cols[2] else NULL))
     })
 
+    # Build a symmetric matrix of RANKS from a symmetric matrix of raw
+    # values, over its lower-triangle finite entries — used to feed the
+    # C++ cross-product engine for a Spearman-style test (rank first, then
+    # test the ranks with the same engine as Pearson/slope; this matches
+    # Genepop's own idxsup()/idxinf() rank-then-cross-product approach for
+    # rankBool=TRUE).
+    .rank_matrix <- function(m) {
+      n <- nrow(m)
+      idx <- which(lower.tri(matrix(TRUE, n, n)))
+      vals <- m[idx]
+      ok <- is.finite(vals)
+      rk <- vals; rk[ok] <- rank(vals[ok])
+      mr <- matrix(NA_real_, n, n, dimnames = dimnames(m))
+      mr[idx] <- rk
+      mr_t <- t(mr)
+      mr[upper.tri(mr)] <- mr_t[upper.tri(mr)]
+      mr
+    }
+
     gf_result_r <- eventReactive(input$run_gf_mantel, {
       df <- gf_base_df_r()
       p1c <- input$gf_col_pop1; p2c <- input$gf_col_pop2
@@ -878,29 +981,75 @@ server_isolation_by_distance <- function(id, rv) {
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
       n_perm <- as.integer(input$gf_n_perm); stat <- input$gf_stat
-      withProgress(message = "Running Mantel test (Genepop/Fstat convention)\u2026", value = 0.2, {
-        res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plain")
-        setProgress(1.0)
-      })
+      seed <- suppressWarnings(as.integer(input$gf_seed %||% 67144630))
+
+      if (identical(input$gf_engine, "cpp")) {
+        # C++ engine: reproduces Genepop's own std::mt19937 +
+        # std::uniform_int_distribution algorithm exactly (see
+        # src/mantel_genepop.cpp) — the best practical chance of matching
+        # Genepop's actual permutation sequence, since R packages are
+        # normally compiled with the same MinGW-w64/GCC toolchain family
+        # that most likely built Genepop.exe.
+        mx_eng <- if (identical(stat, "spearman")) .rank_matrix(m_x) else m_x
+        my_eng <- if (identical(stat, "spearman")) .rank_matrix(m_y) else m_y
+        withProgress(message = "Running Mantel test (C++ engine)\u2026", value = 0.3, {
+          cpp_res <- mantel_genepop_cpp(mx_eng, my_eng, n_perm, as.double(seed))
+          setProgress(1.0)
+        })
+        # Display-friendly statistic (Pearson r / slope b / Spearman rho),
+        # computed the standard way in R on the same lower-triangle pairs —
+        # the C++ engine itself only needs to rank the observed cross-product
+        # against the permuted ones (mathematically equivalent ranking to
+        # testing directly on r/b/rho, established analytically: for fixed
+        # X, permuting only Y, the cross-product sum is an exact linear
+        # function of both the covariance and the regression slope).
+        n <- nrow(m_x)
+        lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+        x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
+        ok <- is.finite(x_all) & is.finite(y_all)
+        stat_obs <- if (stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
+                    else if (stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
+                    else suppressWarnings(cor(x_all[ok], y_all[ok]))
+        lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
+        pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
+        res <- list(
+          stat_obs = stat_obs, p_pos = cpp_res$p_pos, p_neg = cpp_res$p_neg,
+          n_pairs = cpp_res$n_pairs,
+          slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
+          intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
+          r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
+          x = x_all[ok], y = y_all[ok],
+          pop1 = rownames(m_x)[pair_idx[ok, "row"]], pop2 = rownames(m_x)[pair_idx[ok, "col"]],
+          common = rownames(m_x), perm_stats = as.numeric(cpp_res$perm_stats)
+        )
+      } else {
+        set.seed(seed)
+        withProgress(message = "Running Mantel test (R engine)\u2026", value = 0.2, {
+          res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plain")
+          setProgress(1.0)
+        })
+      }
       res$x_label <- paste0(xcol, if (isTRUE(input$gf_log_x)) " (ln)" else "")
       res$y_label <- ycol
       res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
+      res$engine <- input$gf_engine %||% "r"
       res
     })
 
     output$dt_gf_summary <- DT::renderDT({
       r <- gf_result_r()
       d <- data.frame(
-        Quantity = c("X variable", "Y variable", "Statistic", "Observed value",
+        Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2", "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
-                     "Pairs used (n)", "Common populations (N)", "Permutations"),
-        Value = c(r$x_label, r$y_label, r$stat_label, sprintf("%.6f", r$stat_obs),
-                  sprintf("%.6f", r$slope), sprintf("%.6f", r$intercept),
-                  sprintf("%.4f", r$r2), "b/m (Genepop/Fstat, no +1)",
+                     "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
+        Value = c(if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable)",
+                  r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
+                  .fmt_stat(r$slope), .fmt_stat(r$intercept),
+                  sprintf("%.4f", r$r2), "b/m \u2014 plain proportion",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
-                  r$n_pairs, length(r$common), length(r$perm_stats)),
+                  r$n_pairs, length(r$common), length(r$perm_stats), input$gf_seed %||% 67144630),
         stringsAsFactors = FALSE
       )
       DT::datatable(d, rownames = FALSE,
@@ -915,10 +1064,10 @@ server_isolation_by_distance <- function(id, rv) {
       q <- stats::quantile(r$perm_stats, probs = probs, na.rm = TRUE, type = 7)
       d <- data.frame(
         Percentile = paste0(probs * 100, "%"),
-        `Null value` = round(unname(q), 6),
+        `Null value` = vapply(unname(q), .fmt_stat, character(1L)),
         check.names = FALSE, stringsAsFactors = FALSE
       )
-      d <- rbind(d, data.frame(Percentile = "OBSERVED", `Null value` = round(r$stat_obs, 6), check.names = FALSE))
+      d <- rbind(d, data.frame(Percentile = "OBSERVED", `Null value` = .fmt_stat(r$stat_obs), check.names = FALSE))
       DT::datatable(d, rownames = FALSE,
         options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
         class = "compact stripe hover") |>
@@ -952,9 +1101,10 @@ server_isolation_by_distance <- function(id, rv) {
     #  2-3-matrix partial Mantel test to up to 10 predictor matrices at once
     #  (Fstat 2.9.4 convention). Base R packages (ade4, vegan, ecodist) cap
     #  partial Mantel at 2-3 matrices and Pearson/Spearman/Kendall only.
-    #  Reuses the SAME data source, column pickers and rectangular-matrix
-    #  handling (joint row/column relabelling, valid on incomplete pairwise
-    #  data) as the simple Mantel test above (Tab 2).
+    #  Has its own independent data source (Null Alleles module or an
+    #  uploaded file) and reuses the same rectangular-matrix handling
+    #  (joint row/column relabelling, valid on incomplete pairwise data)
+    #  as the simple Mantel test above.
     #
     #  CAVEAT the module's info panel also states: Guillot & Rousset (2013)
     #  and Crabot et al. (2019, Methods Ecol Evol 10:532-540) showed that
@@ -971,29 +1121,60 @@ server_isolation_by_distance <- function(id, rv) {
     #  PAM is NOT implemented here but is flagged as a natural next step.
     # ══════════════════════════════════════════════════════════════════════
 
+    pm_base_df_r <- reactive({
+      if (identical(input$pm_source, "internal")) {
+        full_pair_table_r()
+      } else {
+        shiny::req(input$pm_file)
+        .mt_read_file(input$pm_file, input$pm_sep, input$pm_header)
+      }
+    })
+
+    output$pm_file_status <- renderUI({
+      if (identical(input$pm_source, "internal")) {
+        r <- tryCatch(na_results_r(), error = function(e) NULL)
+        if (is.null(r)) return(tags$p(style="color:#999;font-size:11px;", icon("info-circle"),
+          " No Null Alleles results yet \u2014 run that module first, or switch to \"Upload a file\"."))
+        return(tags$p(style="color:#166534;font-size:11px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:4px 6px;",
+          icon("check-circle"), " Using Null Alleles results: ", tags$strong(sprintf("%d populations", length(r$pops)))))
+      }
+      .file_status_ui(input$pm_file, pm_base_df_r)
+    })
+
+    output$pm_col_pop1_ui <- renderUI({
+      cols <- tryCatch(names(pm_base_df_r()), error = function(e) character(0))
+      selectInput(session$ns("pm_col_pop1"), "Population 1 column:", choices = cols,
+                  selected = .guess_col(cols, c("^Pop1$", "^Farm1$", "^ID1$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$pm_col_pop2_ui <- renderUI({
+      cols <- tryCatch(names(pm_base_df_r()), error = function(e) character(0))
+      selectInput(session$ns("pm_col_pop2"), "Population 2 column:", choices = cols,
+                  selected = .guess_col(cols, c("^Pop2$", "^Farm2$", "^ID2$"), if (length(cols) >= 2L) cols[2] else NULL))
+    })
+
     output$pm_col_y_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       selectInput(session$ns("pm_col_y"), "Response (Y):", choices = cols,
                   selected = .guess_col(cols, c("^FR$", "^FST_ENA$", "^DCSE_INA$"),
                                         if (length(cols)) cols[1] else NULL))
     })
     output$pm_col_x_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       cols <- setdiff(cols, input$pm_col_y %||% "")
       selectInput(session$ns("pm_col_x"), "Predictors (X1\u2026X10) \u2014 pick up to 10:",
                   choices = cols, selected = NULL, multiple = TRUE)
     })
     output$pm_col_x1_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       cols <- setdiff(cols, input$pm_col_y %||% "")
       selectInput(session$ns("pm_col_x1"), "Variable of interest (X):", choices = cols,
                   selected = .guess_col(cols, c("^FR$", "^FST_ENA$"), if (length(cols)) cols[1] else NULL))
     })
     output$pm_col_z_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       cols <- setdiff(cols, c(input$pm_col_y %||% "", input$pm_col_x1 %||% ""))
       selectInput(session$ns("pm_col_z"), "Control matrix (Z, partialled out):", choices = cols,
@@ -1066,8 +1247,9 @@ server_isolation_by_distance <- function(id, rv) {
     }
 
     partial_mantel_result_r <- eventReactive(input$run_partial_mantel, {
-      df <- mt_base_df_r()
-      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      df <- pm_base_df_r()
+      p1c <- input$pm_col_pop1; p2c <- input$pm_col_pop2
+      shiny::req(p1c, p2c)
       all_labels <- sort(unique(trimws(c(as.character(df[[p1c]]), as.character(df[[p2c]])))))
       build <- function(valcol) {
         tmp <- data.frame(P1 = trimws(as.character(df[[p1c]])), P2 = trimws(as.character(df[[p2c]])),
@@ -1082,18 +1264,36 @@ server_isolation_by_distance <- function(id, rv) {
           shiny::need(length(unique(c(ycol, xcol, zcol))) == 3L,
             "Y, X and Z must be three different columns.")
         )
-        cr <- .classic_partial_mantel(build(xcol), build(ycol), build(zcol),
-                                       method = input$pm_classic_stat,
-                                       n_perm = as.integer(input$pm_n_perm),
-                                       progress_label = "Running classic partial Mantel (vegan/ade4-style)\u2026",
-                                       p_formula = input$mt_p_formula %||% "plus1")
+        method <- input$pm_classic_stat
+        seed <- suppressWarnings(as.integer(input$pm_seed %||% 67144630))
+        n_perm <- as.integer(input$pm_n_perm)
+
+        if (identical(input$pm_engine, "cpp")) {
+          mx <- build(xcol); my <- build(ycol); mz <- build(zcol)
+          if (identical(method, "spearman")) { mx <- .rank_matrix(mx); my <- .rank_matrix(my); mz <- .rank_matrix(mz) }
+          set.seed(seed)
+          withProgress(message = "Running classic partial Mantel (C++ engine)\u2026", value = 0.3, {
+            cr_raw <- classic_partial_mantel_cpp(mx, my, mz, n_perm)
+            setProgress(1.0)
+          })
+          cr <- list(statistic = cr_raw$statistic, rxy = cr_raw$rxy, rxz = cr_raw$rxz, ryz = cr_raw$ryz,
+                     p_pos = cr_raw$p_pos, p_neg = cr_raw$p_neg, n_used = cr_raw$n_pairs,
+                     n_pops = cr_raw$n_pops, perm_stats = as.numeric(cr_raw$perm_stats), method = method)
+        } else {
+          set.seed(seed)
+          cr <- .classic_partial_mantel(build(xcol), build(ycol), build(zcol),
+                                         method = method, n_perm = n_perm,
+                                         progress_label = "Running classic partial Mantel (R engine)\u2026",
+                                         p_formula = "plus1")
+        }
         p_two <- if (is.na(cr$p_pos) || is.na(cr$p_neg)) NA_real_ else min(1, 2 * min(cr$p_pos, cr$p_neg))
         tbl <- data.frame(
-          Quantity = c("Variable of interest (X)", "Response (Y)", "Control (Z)", "Correlation method",
+          Quantity = c("Engine", "Variable of interest (X)", "Response (Y)", "Control (Z)", "Correlation method",
                        "r(X,Y)", "r(X,Z)", "r(Y,Z)", "Partial r (X,Y | Z)",
                        "p (one-sided, positive)", "p (one-sided, negative)", "p (two-sided)",
                        "Dyads used", "Common populations", "Permutations"),
-          Value = c(xcol, ycol, zcol, cr$method,
+          Value = c(if (identical(input$pm_engine, "cpp")) "C++ (native)" else "R (portable)",
+                    xcol, ycol, zcol, cr$method,
                     sprintf("%.6f", cr$rxy), sprintf("%.6f", cr$rxz), sprintf("%.6f", cr$ryz),
                     sprintf("%.6f", cr$statistic),
                     if (is.na(cr$p_pos)) "NA" else sprintf("%.4f", cr$p_pos),
@@ -1106,7 +1306,8 @@ server_isolation_by_distance <- function(id, rv) {
                             3, 3, dimnames = list(c(xcol, ycol, zcol), c(xcol, ycol, zcol)))
         return(list(method = "classic", table = tbl, corr_mat = corr_mat,
                     y_label = ycol, x_labels = xcol, z_label = zcol,
-                    statistic = cr$statistic, p_pos = cr$p_pos, perm_stats = cr$perm_stats))
+                    statistic = cr$statistic, p_pos = cr$p_pos, perm_stats = cr$perm_stats,
+                    engine = input$pm_engine %||% "r"))
       }
 
       # ── MRM (default) ──────────────────────────────────────────────────
@@ -1114,7 +1315,7 @@ server_isolation_by_distance <- function(id, rv) {
 
       shiny::validate(
         shiny::need(length(xcols) >= 1L, "Choose at least one predictor matrix."),
-        shiny::need(length(xcols) <= 10L, "Up to 10 predictor matrices are supported (Fstat convention)."),
+        shiny::need(length(xcols) <= 10L, "Up to 10 predictor matrices are supported."),
         shiny::need(!(ycol %in% xcols), "Y cannot also be used as a predictor."),
         shiny::need(all(c(p1c, p2c, ycol, xcols) %in% names(df)), "Selected columns not found.")
       )
@@ -1139,46 +1340,72 @@ server_isolation_by_distance <- function(id, rv) {
 
       n_perm   <- as.integer(input$pm_n_perm)
       use_std  <- isTRUE(input$pm_standardize)
+      seed     <- suppressWarnings(as.integer(input$pm_seed %||% 67144630))
 
-      fit_once <- function(yv) {
-        okk <- compute_ok(yv)
-        if (sum(okk) < (length(xcols) + 3L)) return(NULL)
-        d <- as.data.frame(x_all)[okk, , drop = FALSE]; names(d) <- xcols
-        d$Y <- yv[okk]
-        if (use_std) { d$Y <- .pm_std(d$Y); for (nmc in xcols) d[[nmc]] <- .pm_std(d[[nmc]]) }
-        m <- tryCatch(lm(Y ~ ., data = d), error = function(e) NULL)
-        if (is.null(m)) return(NULL)
-        list(coef = coef(m)[-1L], r2 = summary(m)$r.squared)
-      }
-
-      obs <- fit_once(y_all)
-      shiny::validate(shiny::need(!is.null(obs), "Could not fit the model (check for collinear predictors)."))
-
-      withProgress(message = "Running partial Mantel (MRM)\u2026", value = 0.1, {
-        perm_coef <- matrix(NA_real_, n_perm, length(xcols), dimnames = list(NULL, xcols))
-        perm_r2   <- numeric(n_perm)
-        report_every <- max(1L, round(n_perm / 20))
-        for (b in seq_len(n_perm)) {
-          perm <- sample.int(n)
-          y_p <- mat_y_c[perm, perm, drop = FALSE][lower_idx]
-          fp  <- fit_once(y_p)
-          if (!is.null(fp)) { perm_coef[b, ] <- fp$coef[xcols]; perm_r2[b] <- fp$r2 }
-          if (b %% report_every == 0L) setProgress(0.1 + 0.85 * b / n_perm)
+      if (identical(input$pm_engine, "cpp")) {
+        mats_x_common <- lapply(mats_x, function(m) m[common, common, drop = FALSE])
+        set.seed(seed)
+        withProgress(message = "Running partial Mantel (MRM, C++ engine)\u2026", value = 0.3, {
+          mrm_res <- mrm_cpp(mat_y_c, mats_x_common, n_perm, use_std)
+          setProgress(1.0)
+        })
+        obs_coef <- stats::setNames(as.numeric(mrm_res$obs_coef), xcols)
+        perm_coef <- mrm_res$perm_coef; colnames(perm_coef) <- xcols
+        perm_r2 <- as.numeric(mrm_res$perm_r2)
+        tbl <- do.call(rbind, lapply(xcols, function(nmc) {
+          pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
+          b_obs <- unname(obs_coef[nmc]); m_valid <- length(pc)
+          p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
+          p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
+          data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
+                     stringsAsFactors = FALSE)
+        }))
+        r2v <- perm_r2[is.finite(perm_r2)]
+        p_r2 <- if (length(r2v) > 0L) (sum(r2v >= mrm_res$obs_r2) + 1) / (length(r2v) + 1) else NA_real_
+        r2_obs <- mrm_res$obs_r2; n_dyads_used <- mrm_res$n_pairs
+      } else {
+        set.seed(seed)
+        fit_once <- function(yv) {
+          okk <- compute_ok(yv)
+          if (sum(okk) < (length(xcols) + 3L)) return(NULL)
+          d <- as.data.frame(x_all)[okk, , drop = FALSE]; names(d) <- xcols
+          d$Y <- yv[okk]
+          if (use_std) { d$Y <- .pm_std(d$Y); for (nmc in xcols) d[[nmc]] <- .pm_std(d[[nmc]]) }
+          m <- tryCatch(lm(Y ~ ., data = d), error = function(e) NULL)
+          if (is.null(m)) return(NULL)
+          list(coef = coef(m)[-1L], r2 = summary(m)$r.squared)
         }
-      })
 
-      tbl <- do.call(rbind, lapply(xcols, function(nmc) {
-        pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
-        b_obs   <- unname(obs$coef[nmc])
-        m_valid <- length(pc)
-        p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
-        p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
-        data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
-                   stringsAsFactors = FALSE)
-      }))
+        obs <- fit_once(y_all)
+        shiny::validate(shiny::need(!is.null(obs), "Could not fit the model (check for collinear predictors)."))
 
-      r2v  <- perm_r2[is.finite(perm_r2)]
-      p_r2 <- if (length(r2v) > 0L) (sum(r2v >= obs$r2) + 1) / (length(r2v) + 1) else NA_real_
+        withProgress(message = "Running partial Mantel (MRM, R engine)\u2026", value = 0.1, {
+          perm_coef <- matrix(NA_real_, n_perm, length(xcols), dimnames = list(NULL, xcols))
+          perm_r2   <- numeric(n_perm)
+          report_every <- max(1L, round(n_perm / 20))
+          for (b in seq_len(n_perm)) {
+            perm <- sample.int(n)
+            y_p <- mat_y_c[perm, perm, drop = FALSE][lower_idx]
+            fp  <- fit_once(y_p)
+            if (!is.null(fp)) { perm_coef[b, ] <- fp$coef[xcols]; perm_r2[b] <- fp$r2 }
+            if (b %% report_every == 0L) setProgress(0.1 + 0.85 * b / n_perm)
+          }
+        })
+
+        tbl <- do.call(rbind, lapply(xcols, function(nmc) {
+          pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
+          b_obs   <- unname(obs$coef[nmc])
+          m_valid <- length(pc)
+          p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
+          p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
+          data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
+                     stringsAsFactors = FALSE)
+        }))
+
+        r2v  <- perm_r2[is.finite(perm_r2)]
+        p_r2 <- if (length(r2v) > 0L) (sum(r2v >= obs$r2) + 1) / (length(r2v) + 1) else NA_real_
+        r2_obs <- obs$r2; n_dyads_used <- sum(ok0)
+      }
 
       corr_df <- as.data.frame(x_all)[ok0, , drop = FALSE]; names(corr_df) <- xcols
       corr_df$Y <- y_all[ok0]
@@ -1186,8 +1413,9 @@ server_isolation_by_distance <- function(id, rv) {
       names(corr_df)[1] <- ycol
       corr_mat <- suppressWarnings(cor(corr_df, use = "pairwise.complete.obs"))
 
-      list(method = "mrm", table = tbl, r2 = obs$r2, p_r2 = p_r2, n_dyads = sum(ok0), n_pops = n,
-           standardized = use_std, y_label = ycol, x_labels = xcols, corr_mat = corr_mat)
+      list(method = "mrm", table = tbl, r2 = r2_obs, p_r2 = p_r2, n_dyads = n_dyads_used, n_pops = n,
+           standardized = use_std, y_label = ycol, x_labels = xcols, corr_mat = corr_mat,
+           engine = input$pm_engine %||% "r")
     })
 
     output$dt_partial_mantel <- DT::renderDT({
@@ -1211,15 +1439,14 @@ server_isolation_by_distance <- function(id, rv) {
       r <- partial_mantel_result_r()
       if (identical(r$method, "classic")) {
         return(tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
-          "Classic partial Mantel (vegan/ade4-style): partial correlation of ", tags$strong(r$y_label),
-          " with ", tags$strong(r$x_labels), " while controlling for ", tags$strong(r$z_label), ".", tags$br(),
-          "This is the exact statistic reported by vegan's ", tags$code("mantel.partial()"),
-          " and reproducible in ade4 via ", tags$code("mantel.rtest()"), " on residuals \u2014 directly ",
-          "comparable to those packages' (or Fstat's, if it uses the same formula) output."
+          "Classic partial Mantel: partial correlation of ", tags$strong(r$y_label),
+          " with ", tags$strong(r$x_labels), " while controlling for ", tags$strong(r$z_label), " (",
+          if (identical(r$engine, "cpp")) "C++ engine" else "R engine", ")."
         ))
       }
       tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
-        sprintf("Full model: R\u00b2 = %.4f, p = %s (permutation test on R\u00b2)",
+        sprintf("Full model (%s engine): R\u00b2 = %.4f, p = %s (permutation test on R\u00b2)",
+                if (identical(r$engine, "cpp")) "C++" else "R",
                 r$r2, if (is.na(r$p_r2)) "NA" else formatC(r$p_r2, format = "f", digits = 4)), tags$br(),
         sprintf("Dyads used: %d \u2014 sub-samples in common: %d", r$n_dyads, r$n_pops), tags$br(),
         sprintf("Response: %s \u2014 Predictors: %s", r$y_label, paste(r$x_labels, collapse = ", "))

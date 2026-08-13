@@ -170,24 +170,25 @@ isolation_by_distance_UI <- function(id) {
           HTML(paste0(
             "Generic Mantel permutation test between any two pairwise distances (genetic, ",
             "geographic, temporal, ecological or categorical), using a table of pairs in rows / ",
-            "distances in columns (RT, Manly 2018; Fstat 2.9.4 convention). Supports ",
+            "distances in columns. Supports ",
             "<b>rectangular matrices</b>: pairs can be excluded (e.g. to keep contemporaneous ",
             "pairs only) without dropping every pair involving the corresponding sub-samples. ",
             "Permutation is by <b>joint row/column relabelling</b> of one matrix, which stays ",
-            "valid when either matrix is incomplete. Statistic: Pearson's r or Spearman's rho ",
-            "(Fstat convention) or the slope of the Rousset (1997) regression (Genepop convention ",
-            "for IBD). ",
-            "One-sided p-value = (b+1)/(m+1) by default (b = number of permuted statistics \u2265 observed) ",
-            "\u2014 matches vegan's <code>mantel()</code> and ade4's <code>mantel.rtest()</code> exactly, verified ",
-            "directly against their R source (2026-08-12). A <b>p-value formula</b> toggle below lets you switch ",
-            "to Genepop/Fstat's own convention (plain <code>b/m</code>, no +1 correction \u2014 verified directly ",
-            "against Genepop's <code>mantelTest()</code> source, <code>src/F_est.cpp</code>, 2026-08-12).",
-            "<br><b>If your numbers don't match Fstat:</b> Fstat's own Isolation-by-Distance Mantel test ",
-            "uses the regression <b>slope b</b> (not Pearson r) of <b>F_R = FST/(1-FST)</b> against ",
-            "<b>ln(distance)</b> (2D habitat) or raw distance (1D) \u2014 make sure you selected ",
-            "\"Regression slope (Rousset)\", picked <code>FR</code>/<code>FR_raw</code> as Y, ticked ",
-            "\"ln(transform) X\" if comparing to a 2D Fstat run, and set the p-value formula to \"Genepop/Fstat\". ",
-            "Also check the Exclude-pairs field is empty if Fstat used every pair."
+            "valid when either matrix is incomplete. Statistic: Pearson's correlation, Spearman's ",
+            "rank correlation, or the slope of an ordinary least-squares regression (Rousset 1997, ",
+            "for isolation-by-distance). ",
+            "One-sided p-value = (b+1)/(m+1) (b = number of permuted statistics at least as extreme ",
+            "as observed, m = number of permutations) \u2014 a bias-corrected proportion that avoids a ",
+            "p-value of exactly 0 or 1 from a finite number of replicates (Davison &amp; Hinkley 1997). ",
+            "A companion tab uses the same test with a plain (uncorrected) proportion instead, kept ",
+            "separate so the two formulas are never mixed up.",
+            "<br>Two computation engines are available: a <b>C++</b> engine running the permutation loop ",
+            "natively for speed, and a fully portable <b>R</b> engine giving the same statistics.",
+            "<br><b>Tip:</b> for isolation-by-distance specifically, the regression-slope statistic is usually ",
+            "run on linearised genetic distance (e.g. F<sub>ST</sub>/(1-F<sub>ST</sub>)) against ",
+            "<b>ln(geographic distance)</b> (2D habitat model) \u2014 make sure you selected the slope statistic, ",
+            "picked a linearised distance as Y, and ticked \"ln(transform) X\" (or chose an already-logged ",
+            "distance column) if that is the model you intend to test."
           ))
         ),
 
@@ -246,21 +247,22 @@ isolation_by_distance_UI <- function(id) {
                   choices = c("Pearson r" = "r", "Spearman rho" = "spearman",
                               "Regression slope (Rousset)" = "b"),
                   selected = "r"),
-                checkboxInput(ns("mt_log_x"), "ln(transform) X", value = FALSE)
+                checkboxInput(ns("mt_log_x"), "ln(transform) X", value = FALSE),
+                uiOutput(ns("mt_double_log_warning"))
               ),
               column(4,
                 numericInput(ns("mt_n_perm"), "Permutations:",
                              value = 10000, min = 99, max = 200000, step = 1000),
                 tags$p(style="color:#777;font-size:11px;", "Advised \u2265 1000."),
-                radioButtons(ns("mt_p_formula"), "p-value formula:",
-                  choices = c("(b+1)/(m+1) \u2014 vegan/ade4" = "plus1",
-                              "b/m \u2014 Genepop/Fstat (no +1)" = "plain"),
-                  selected = "plus1"),
+                radioButtons(ns("mt_engine"), "Engine:",
+                  choices = c("C++ \u2014 native, faster" = "cpp",
+                              "R \u2014 portable" = "r"),
+                  selected = "cpp"),
                 tags$p(style="color:#777;font-size:11px;",
-                  "Checked directly against Genepop's own mantelTest() source (src/F_est.cpp, 2026-08-12): ",
-                  "it divides by the plain permutation count, with no +1/+1 correction \u2014 unlike vegan/ade4. ",
-                  "Pick \"Genepop/Fstat\" here for p-values directly comparable to those tools; the difference ",
-                  "is small but systematic (our default is always slightly more conservative).")
+                  icon("lock"), " p-value formula: ", tags$strong("(b+1)/(m+1) (bias-corrected proportion)")),
+                tags$div(style = "display:none;",
+                  numericInput(ns("mt_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1)
+                )
               ),
               column(4,
                 textInput(ns("mt_exclude"), "Exclude pairs ('ID1-ID2', comma-sep):", value = ""),
@@ -291,8 +293,8 @@ isolation_by_distance_UI <- function(id) {
                           icon("table"), " Null distribution quantiles (permutations)"),
             DT::DTOutput(ns("dt_mantel_quantiles")),
             tags$p(style="color:#777;font-size:11px;margin-top:6px;",
-              "Same style of output as Fstat's permutation table: the observed statistic can be ",
-              "compared directly against these percentile thresholds of the permuted null distribution.")
+              "The observed statistic can be compared directly against these percentile thresholds of the ",
+              "permuted null distribution.")
           )
         ),
 
@@ -308,42 +310,46 @@ isolation_by_distance_UI <- function(id) {
       ),
 
       # ══════════════════════════════════════════════════════════════════
-      # TAB 2b — Genepop/Fstat Mantel (dedicated tab, p-value formula FIXED
-      # to Genepop/Fstat's own convention — kept separate from the generic
-      # Mantel Test tab above so the two conventions never get mixed up /
-      # accidentally compared against each other under the wrong setting)
+      # TAB 2b — Mantel Test (b/m): dedicated tab for the plain-proportion
+      # p-value formula, kept separate from the generic Mantel Test tab
+      # above (which uses the bias-corrected formula) so the two never get
+      # mixed up / accidentally compared under the wrong setting.
       # ══════════════════════════════════════════════════════════════════
-      tabPanel(title = tagList(icon("file-import"), " Genepop/Fstat Mantel"), value = "tab_mantel_genepop",
+      tabPanel(title = tagList(icon("divide"), " Mantel Test (b/m)"), value = "tab_mantel_genepop",
         br(),
 
         tags$div(
           class = "spg-method-note", style = "border-left-color:#0c4a6e;",
           HTML(paste0(
-            "Dedicated Mantel test tab for direct comparison against <b>Genepop</b> and <b>Fstat</b> \u2014 the ",
-            "p-value formula here is <b>fixed</b> to their own convention (plain <code>b/m</code>, ",
-            "no +1/+1 correction), verified directly against Genepop's <code>mantelTest()</code> source ",
-            "(<code>src/F_est.cpp</code>, 2026-08-12): <code>Pvalueneg = Pvalueneg / mantelPerms</code>. ",
-            "Kept in its own tab \u2014 separate from the generic Mantel Test tab (which defaults to the ",
-            "vegan/ade4 <code>(b+1)/(m+1)</code> convention) \u2014 so the two conventions never get mixed up ",
-            "when comparing results.<br>",
-            "Upload a pairwise file with one row per population pair (e.g. the file exported by the Null ",
-            "Alleles module's IBD table, or any similarly-formatted file: columns for ",
-            "<code>Pop1</code>, <code>Pop2</code>, and numeric distance columns such as ",
-            "<code>FST_raw</code>, <code>FST_ENA</code>, <code>FR</code>, <code>FR_raw</code>, ",
-            "<code>Dgeo_m</code>, <code>lnDgeo</code>\u2026)."
+            "Same Mantel permutation test as the previous tab, using a different one-sided p-value formula: ",
+            "a <b>plain proportion</b>, <code>p = b/m</code> (b = number of permuted statistics at least as ",
+            "extreme as observed, m = number of permutations) \u2014 no bias correction is applied here, unlike ",
+            "the previous tab's <code>(b+1)/(m+1)</code>. Kept in its own tab so the two formulas are never ",
+            "mixed up when comparing results; the test statistic and permutation scheme (joint row/column ",
+            "relabelling) are otherwise identical.<br>",
+            "Two computation engines are available: a <b>C++</b> engine running the permutation loop natively ",
+            "for speed, and a fully portable <b>R</b> engine giving the same statistics via R's own permutation ",
+            "mechanism \u2014 pick whichever suits your workflow."
           ))
         ),
 
         fluidRow(
           box(width = 4, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("folder-open"), " Load pairwise file"),
-            fileInput(ns("gf_file"), "Browse\u2026 (pairwise file: Pop1, Pop2, distances)",
-                      accept = c(".csv", ".txt", ".tsv")),
-            radioButtons(ns("gf_sep"), "Separator:",
-              choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
-              selected = "\t", inline = TRUE),
-            checkboxInput(ns("gf_header"), "File has header row", value = TRUE),
+                          icon("database"), " Data source"),
+            radioButtons(ns("gf_source"), NULL,
+              choices = c("Null Alleles module (this session)" = "internal",
+                          "Upload a file"                       = "upload"),
+              selected = "internal"),
+            conditionalPanel(
+              condition = sprintf("input['%s'] == 'upload'", ns("gf_source")),
+              fileInput(ns("gf_file"), "Browse\u2026 (pairwise file: Pop1, Pop2, distances)",
+                        accept = c(".csv", ".txt", ".tsv")),
+              radioButtons(ns("gf_sep"), "Separator:",
+                choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
+                selected = "\t", inline = TRUE),
+              checkboxInput(ns("gf_header"), "File has header row", value = TRUE)
+            ),
             uiOutput(ns("gf_file_status")),
             tags$hr(),
             uiOutput(ns("gf_col_pop1_ui")),
@@ -351,7 +357,7 @@ isolation_by_distance_UI <- function(id) {
           ),
           box(width = 8, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("sliders-h"), " Mantel parameters (Genepop/Fstat convention)"),
+                          icon("sliders-h"), " Mantel parameters"),
             fluidRow(
               column(4,
                 uiOutput(ns("gf_col_x_ui")),
@@ -362,13 +368,21 @@ isolation_by_distance_UI <- function(id) {
                   choices = c("Pearson r" = "r", "Spearman rho" = "spearman",
                               "Regression slope (Rousset)" = "b"),
                   selected = "r"),
-                checkboxInput(ns("gf_log_x"), "ln(transform) X", value = FALSE)
+                checkboxInput(ns("gf_log_x"), "ln(transform) X", value = FALSE),
+                uiOutput(ns("gf_double_log_warning"))
               ),
               column(4,
+                radioButtons(ns("gf_engine"), "Engine:",
+                  choices = c("C++ \u2014 native, faster" = "cpp",
+                              "R \u2014 portable" = "r"),
+                  selected = "cpp"),
                 numericInput(ns("gf_n_perm"), "Permutations:",
                              value = 10000, min = 99, max = 200000, step = 1000),
                 tags$p(style="color:#777;font-size:11px;",
-                  icon("lock"), " p-value formula: ", tags$strong("b/m (Genepop/Fstat, fixed \u2014 no +1)")),
+                  icon("lock"), " p-value formula: ", tags$strong("b/m (plain proportion, no correction)")),
+                tags$div(style = "display:none;",
+                  numericInput(ns("gf_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1)
+                ),
                 actionButton(ns("run_gf_mantel"), "Run Mantel Test",
                              icon = icon("random"), class = "btn-action-primary btn-block",
                              style = "font-weight:bold;")
@@ -403,23 +417,22 @@ isolation_by_distance_UI <- function(id) {
           class = "spg-method-note", style = "border-left-color:#B45309;",
           HTML(paste0(
             "Two ways to test for an association between one matrix and another while controlling for a ",
-            "third (or more) \u2014 pick whichever matches what you need to compare against.<br>",
-            "<b>MRM</b> (multiple regression on distance matrices; Legendre, Lapointe &amp; Casgrain 1994) ",
-            "generalises to <b>more than 2\u20133 matrices at once</b> (up to 10, Fstat 2.9.4 convention) via a joint ",
-            "multiple regression. Base R packages (ade4, vegan, ecodist) cap partial Mantel at 2\u20133 matrices.<br>",
-            "<b>Classic partial Mantel (vegan/ade4-style)</b> reproduces, statistic-for-statistic, vegan's ",
-            "<code>mantel.partial()</code> and ade4's <code>mantel.rtest()</code> \u2014 checked directly against their ",
-            "R source (2026-08-12): the classic Yule (1907) partial-correlation formula ",
-            "<code>(rxy \u2212 rxz\u00b7ryz) / \u221a(1\u2212rxz\u00b2) / \u221a(1\u2212ryz\u00b2)</code>, tested by permuting X's row/column ",
-            "labels while Y and Z stay fixed. Limited to exactly one control matrix (Z), but gives a number directly ",
-            "comparable to those packages (or Fstat, if it uses the same formula) \u2014 the MRM coefficient is a ",
-            "genuinely different statistic (a regression slope) and will not numerically match them.<br>",
-            "Both work on the <b>same rectangular/incomplete data</b> as the Mantel Test tab (uses the same data ",
-            "source and Pop1/Pop2 columns \u2014 set those there first).",
+            "third (or more) \u2014 pick whichever fits how many matrices you need to control for.<br>",
+            "<b>MRM</b> (multiple regression on distance matrices; Legendre, Lapointe &amp; Casgrain 1994) fits ",
+            "a joint multiple regression of the response on <b>up to 10 predictor matrices at once</b>, testing ",
+            "each predictor's own regression coefficient by permuting the response (Y) matrix.<br>",
+            "<b>Classic partial Mantel</b> uses the Yule (1907) partial-correlation formula ",
+            "<code>(rxy \u2212 rxz\u00b7ryz) / \u221a(1\u2212rxz\u00b2) / \u221a(1\u2212ryz\u00b2)</code> between the variable of interest ",
+            "(X) and the response (Y) while controlling for exactly <b>one</b> matrix (Z), tested by permuting X's ",
+            "row/column labels while Y and Z stay fixed. Limited to a single control matrix, but reports a partial ",
+            "correlation coefficient rather than a regression slope \u2014 the two methods answer a related but ",
+            "genuinely different statistical question, so their numbers are not meant to match each other.<br>",
+            "Both support the same <b>rectangular/incomplete data</b> as the Mantel Test tab, and both are ",
+            "available with a native <b>C++</b> engine (faster) or a portable <b>R</b> engine (same statistics).",
             "<br><b>Caveat (applies to both methods):</b> partial Mantel tests can have inflated type I error when ",
             "the matrix being partialled out (e.g. geographic distance) is itself spatially autocorrelated (Guillot ",
             "&amp; Rousset 2013; Crabot et al. 2019, <i>Methods Ecol Evol</i> 10:532\u2013540). A plain Mantel test per ",
-            "predictor (previous tab) and, in the future, the Procrustes association metric (Lisboa et al. 2014, ",
+            "predictor (previous tabs) and, in the future, the Procrustes association metric (Lisboa et al. 2014, ",
             "<i>PLoS ONE</i> 9(6):e101238) as a less-controversial alternative, are worth cross-checking any result ",
             "against. Borcard &amp; Legendre (2012, <i>Ecology</i> 93:1473\u20131481) found the plain Mantel test itself ",
             "has acceptable power for most ecological uses."
@@ -429,10 +442,28 @@ isolation_by_distance_UI <- function(id) {
         fluidRow(
           box(width = 4, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("database"), " Variables (from the Mantel Test tab's data source)"),
+                          icon("database"), " Data source"),
+            radioButtons(ns("pm_source"), NULL,
+              choices = c("Null Alleles module (this session)" = "internal",
+                          "Upload a file"                       = "upload"),
+              selected = "internal"),
+            conditionalPanel(
+              condition = sprintf("input['%s'] == 'upload'", ns("pm_source")),
+              fileInput(ns("pm_file"), "Browse\u2026 (pairwise file: Pop1, Pop2, distances)",
+                        accept = c(".csv", ".txt", ".tsv")),
+              radioButtons(ns("pm_sep"), "Separator:",
+                choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
+                selected = "\t", inline = TRUE),
+              checkboxInput(ns("pm_header"), "File has header row", value = TRUE)
+            ),
+            uiOutput(ns("pm_file_status")),
+            tags$hr(),
+            uiOutput(ns("pm_col_pop1_ui")),
+            uiOutput(ns("pm_col_pop2_ui")),
+            tags$hr(),
             radioButtons(ns("pm_method"), "Method:",
               choices = c("MRM \u2014 up to 10 predictors at once" = "mrm",
-                          "Classic partial Mantel \u2014 vegan/ade4-style, 1 control matrix" = "classic"),
+                          "Classic partial Mantel \u2014 1 control matrix" = "classic"),
               selected = "mrm"),
             tags$hr(),
             uiOutput(ns("pm_col_y_ui")),
@@ -442,8 +473,8 @@ isolation_by_distance_UI <- function(id) {
               checkboxInput(ns("pm_standardize"), "Standardize (z-score) variables before fitting",
                             value = FALSE),
               tags$p(style="color:#777;font-size:11px;",
-                "Off by default so coefficients are in the same raw units Fstat reports. Turn on only if ",
-                "you want to compare the relative strength of predictors measured in different units.")
+                "Off by default so coefficients are reported in the original (raw) units of each matrix. Turn ",
+                "on only if you want to compare the relative strength of predictors measured in different units.")
             ),
             conditionalPanel(
               condition = sprintf("input['%s'] == 'classic'", ns("pm_method")),
@@ -453,10 +484,17 @@ isolation_by_distance_UI <- function(id) {
                 choices = c("Pearson" = "pearson", "Spearman" = "spearman"), selected = "pearson", inline = TRUE)
             ),
             numericInput(ns("pm_n_perm"), "Permutations:", value = 999, min = 99, max = 20000, step = 100),
+            radioButtons(ns("pm_engine"), "Engine:",
+              choices = c("C++ \u2014 native, faster" = "cpp",
+                          "R \u2014 portable" = "r"),
+              selected = "cpp"),
             tags$p(style="color:#777;font-size:11px;",
-              "MRM permutes the response (Y) matrix; classic mode permutes the variable-of-interest (X) matrix ",
-              "\u2014 matching vegan/ade4's own convention. Both use joint row/column relabelling, valid on ",
-              "incomplete data."),
+              "Applies to whichever method is selected above. MRM permutes the response (Y) matrix; classic ",
+              "mode permutes the variable-of-interest (X) matrix. Both use joint row/column relabelling, ",
+              "valid on incomplete data."),
+            tags$div(style = "display:none;",
+              numericInput(ns("pm_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1)
+            ),
             actionButton(ns("run_partial_mantel"), "Run Partial Mantel",
                          icon = icon("random"), class = "btn-action-primary btn-block",
                          style = "font-weight:bold;")

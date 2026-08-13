@@ -802,7 +802,7 @@ server_null_alleles <- function(id, rv) {
     #  — unlike bootstrap-over-loci, resampling *populations* for a single
     #  fixed locus is meaningful (that locus's own allele-frequency
     #  variation across populations is what gets resampled).
-    boot_subsamples_fst <- function(em_res, nboot, alpha, progress_cb = NULL) {
+    .boot_subsamples_fst_r <- function(em_res, nboot, alpha, progress_cb = NULL) {
       markers <- names(em_res)
       pops    <- names(em_res[[markers[1]]])
       n_pop   <- length(pops)
@@ -828,6 +828,103 @@ server_null_alleles <- function(id, rv) {
         if (!is.null(progress_cb) && (b %% report_every == 0L || b == nboot))
           progress_cb(b / nboot)
       }
+      per_locus <- data.frame(
+        Locus              = markers,
+        CI_lo_raw_subs     = round(apply(boot_raw_loc, 2, stats::quantile, probs=alpha/2,   na.rm=TRUE), 6),
+        CI_hi_raw_subs     = round(apply(boot_raw_loc, 2, stats::quantile, probs=1-alpha/2, na.rm=TRUE), 6),
+        CI_lo_ENA_subs     = round(apply(boot_ena_loc, 2, stats::quantile, probs=alpha/2,   na.rm=TRUE), 6),
+        CI_hi_ENA_subs     = round(apply(boot_ena_loc, 2, stats::quantile, probs=1-alpha/2, na.rm=TRUE), 6),
+        stringsAsFactors = FALSE, row.names = NULL
+      )
+      list(
+        raw = quantile(boot_raw, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
+        ena = quantile(boot_ena, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
+        boot_raw_vec = boot_raw,
+        boot_ena_vec = boot_ena,
+        per_locus = per_locus
+      )
+    }
+
+    # Extract, ONCE (outside the bootstrap loop), the per-locus x
+    # per-population x per-allele summary counts (ni, nA, AA, AA_corr) that
+    # weir_components_allele() needs — population membership, not
+    # individual genotypes, is what the sub-samples bootstrap resamples, so
+    # no EM re-run is required inside the loop, only these small numeric
+    # summaries. Passed to boot_subsamples_fst_cpp() so the actual
+    # per-replicate aggregation runs natively instead of as an R loop.
+    .precompute_boot_subs_data <- function(em_res) {
+      markers <- names(em_res); pops <- names(em_res[[markers[1]]])
+      lapply(markers, function(loc) {
+        em_loc <- em_res[[loc]]
+        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
+        n_allele <- length(alleles_obs); n_pop <- length(pops)
+        ni_raw <- vapply(pops, function(p) { e <- em_loc[[p]]; as.numeric(max(0L, e$efpop - e$n_absent - e$n_null_homo)) }, numeric(1))
+        ni_ena <- vapply(pops, function(p) { e <- em_loc[[p]]; as.numeric(max(0L, e$efpop - e$n_absent)) }, numeric(1))
+        nA_raw <- AA_raw <- nA_ena <- AA_corr <- matrix(0.0, n_pop, max(n_allele, 1L))
+        if (n_allele > 0L) {
+          for (ai in seq_along(alleles_obs)) {
+            a_chr <- as.character(alleles_obs[ai])
+            for (pi in seq_along(pops)) {
+              e <- em_loc[[pops[pi]]]
+              pf_raw <- if (a_chr %in% names(e$genefreq_obs)) e$genefreq_obs[[a_chr]] else 0.0
+              AA <- if (a_chr %in% names(e$H_ii)) e$H_ii[[a_chr]] else 0.0
+              nA_raw[pi, ai] <- pf_raw * 2.0 * ni_raw[pi]
+              AA_raw[pi, ai] <- AA
+              pf_ena <- if (a_chr %in% names(e$pfreq)) e$pfreq[[a_chr]] else 0.0
+              d <- pf_ena + 2.0 * e$rd
+              AAc <- if (AA > 0 && d > 0) AA * (pf_ena / d) else 0.0
+              nA_ena[pi, ai] <- pf_ena * 2.0 * ni_ena[pi]
+              AA_corr[pi, ai] <- AAc
+            }
+          }
+        }
+        list(ni_raw = as.numeric(ni_raw), ni_ena = as.numeric(ni_ena),
+             nA_raw = nA_raw, AA_raw = AA_raw, nA_ena = nA_ena, AA_corr = AA_corr)
+      })
+    }
+
+    # C++-accelerated sub-samples bootstrap — same signature and return
+    # shape as the original pure-R version above (.boot_subsamples_fst_r),
+    # so the call site (results_r()) needed no changes. Runs in batches so
+    # the progress bar still updates smoothly; falls back to the pure-R
+    # loop automatically if the native call errors for any reason.
+    boot_subsamples_fst <- function(em_res, nboot, alpha, progress_cb = NULL) {
+      markers <- names(em_res); L <- length(markers)
+      per_locus_data <- tryCatch(.precompute_boot_subs_data(em_res), error = function(e) NULL)
+
+      cpp_ok <- !is.null(per_locus_data)
+      if (cpp_ok) {
+        n_batches <- max(1L, min(20L, nboot))
+        base_size <- nboot %/% n_batches; rem <- nboot %% n_batches
+        batch_sizes <- rep(base_size, n_batches)
+        if (rem > 0L) batch_sizes[seq_len(rem)] <- batch_sizes[seq_len(rem)] + 1L
+        batch_sizes <- batch_sizes[batch_sizes > 0L]
+
+        boot_raw <- numeric(0); boot_ena <- numeric(0)
+        boot_raw_loc <- matrix(numeric(0), nrow = 0, ncol = L)
+        boot_ena_loc <- matrix(numeric(0), nrow = 0, ncol = L)
+        done <- 0L
+        result <- tryCatch({
+          for (bs in batch_sizes) {
+            rb <- boot_subsamples_fst_cpp(per_locus_data, bs)
+            boot_raw <- c(boot_raw, rb$boot_raw)
+            boot_ena <- c(boot_ena, rb$boot_ena)
+            boot_raw_loc <- rbind(boot_raw_loc, rb$boot_raw_loc)
+            boot_ena_loc <- rbind(boot_ena_loc, rb$boot_ena_loc)
+            done <- done + bs
+            if (!is.null(progress_cb)) progress_cb(done / nboot)
+          }
+          TRUE
+        }, error = function(e) FALSE)
+        cpp_ok <- isTRUE(result)
+      }
+
+      if (!cpp_ok) {
+        # Defensive fallback: identical statistics, pure-R implementation.
+        return(.boot_subsamples_fst_r(em_res, nboot, alpha, progress_cb))
+      }
+
+      colnames(boot_raw_loc) <- markers; colnames(boot_ena_loc) <- markers
       per_locus <- data.frame(
         Locus              = markers,
         CI_lo_raw_subs     = round(apply(boot_raw_loc, 2, stats::quantile, probs=alpha/2,   na.rm=TRUE), 6),
